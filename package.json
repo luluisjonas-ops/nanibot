@@ -1,0 +1,11 @@
+{
+  "name": "nanibot-discord",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "scripts": { "start": "node bot.js" },
+  "dependencies": {
+    "discord.js": "^14.21.0",
+    "discord-backup": "^3.4.0",
+    "node-fetch": "^2.7.0"
+  }
+}
