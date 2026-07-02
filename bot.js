@@ -35,11 +35,11 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// APENAS ESTA FUNÇÃO FOI CORRIGIDA (URL COM A ROTA OFICIAL EXIGIDA PELO GOOGLE)
+// CORRIGIDO: ROTA v1beta RESOLVE O ERRO DE SUPORTE DO MODELO
 async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
     
-    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     
     const contents = [
         {
@@ -121,9 +121,14 @@ async function enviarLog(guild, titulo, descricao, cor, campos) {
     } catch (e) {}
 }
 
-const PALAVROES = ['porra','caralho','merda','bosta','foda','foder','fodase','foda-se','puta','putaria','viado','cuzao','cuzão','idiota','imbecil','babaca','otario','trouxa','burro'];
+// EXPANDIDO: LISTA COMPLETA DE XINGAMENTOS, ABREVIAÇÕES DE TWITTER/TIKTOK E ENGENHARIA DE TEXTO
+const PALAVROES = [
+    'porra', 'prr', 'caralho', 'crl', 'krl', 'krI', 'merda', 'mrd', 'bosta', 'bst', 'foda', 'foder', 'fdr', 'fodase', 'foda-se', 'fdms',
+    'puta', 'pt', 'putaria', 'viado', 'vdo', 'vd', 'viadinho', 'cuzao', 'cuzão', 'cu', 'idiota', 'idta', 'imbecil', 'babaca', 'otario', 
+    'trouxa', 'burro', 'vtnc', 'tnc', 'fdp', 'vnc', 'cornudo', 'corno', 'pnc', 'arrombado', 'arrombadinho', 'filho da puta', 'filha da puta', 
+    'desgraçado', 'desgraca', 'vagabundo', 'vgb', 'cacete', 'cct', 'desgraça', 'puto', 'pqp', 'filho de uma puta', 'ramelao', 'otaria'
+];
 
-// TODO O RESTANTE DO CÓDIGO PERMANECEU INALTERADO
 function trackNeural(message) {
     if (!config.neural) config.neural = { members: {} };
     const m = config.neural.members;
@@ -151,7 +156,10 @@ function gerarRelatorioNeural(guild) {
 }
 
 function normalizarTexto(texto) {
-    return texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, '');
+    // Normaliza acentos, remove caracteres especiais e substitui números óbvios que burlam o filtro (ex: c4r4lh0 -> caralho)
+    let formatado = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    formatado = formatado.replace(/4/g, 'a').replace(/3/g, 'e').replace(/1/g, 'i').replace(/0/g, 'o').replace(/7/g, 't');
+    return formatado.replace(/[^a-z0-9 ]/g, '');
 }
 
 const PORT = process.env.PORT || 3000;
@@ -242,11 +250,21 @@ client.on('messageCreate', async (message) => {
     }
 
     if (config.filtroXingamentosAtivo === false) return;
+    
+    // Varre o texto quebrando por palavras e analisando substrings
     const textoNorm = normalizarTexto(message.content);
-    if (PALAVROES.some(p => textoNorm.includes(normalizarTexto(p)))) {
+    const palavrasDoTexto = textoNorm.split(/\s+/);
+    
+    const contemPalavrao = PALAVROES.some(p => {
+        const pNorm = normalizarTexto(p);
+        // Bloqueia se a palavra exata existir ou se for uma substring perigosa
+        return palavrasDoTexto.includes(pNorm) || textoNorm.includes(pNorm);
+    });
+
+    if (contemPalavrao) {
         try { 
             await message.delete();
-            await enviarLog(message.guild, '🛡️ Mensagem Retida', `Mensagem de ${message.author} deletada por conter xingamentos.`, '#FF0000', [{ name: 'Conteúdo', value: `||${message.content}||` }]);
+            await enviarLog(message.guild, '🛡️ Mensagem Retida', `Mensagem de ${message.author} deletada por conter xingamentos ou abreviações proibidas.`, '#FF0000', [{ name: 'Conteúdo', value: `||${message.content}||` }]);
         } catch (e) {}
     }
 });
@@ -267,7 +285,7 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'filtro-xingamentos') {
         const escolha = options.getString('status');
-        config.filtroXingamentosAtivo = (escolha === 'ativar'); saveConfig();
+        config.filtroXingamentosAtivo = (choice === 'ativar' || escolha === 'ativar'); saveConfig();
         return interaction.reply({ content: config.filtroXingamentosAtivo ? '🛡️ Filtro Ativado.' : '🔓 Filtro Desativado.' });
     }
 
@@ -325,7 +343,7 @@ client.on('interactionCreate', async interaction => {
         const tempo = options.getInteger('tempo');
         const target = await guild.members.fetch(membro.id);
         await target.timeout(tempo * 60 * 1000);
-        return interaction.reply(`🤫 Mutado por ${tempo} minutes.`);
+        return interaction.reply(`🤫 Mutado por ${tempo} minutos.`);
     }
 
     if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Restrito ao Dono.', ephemeral: true });
@@ -357,7 +375,7 @@ client.on('interactionCreate', async interaction => {
         ];
         for (const nomeCargo of cargosParaCriar) {
             if (!guild.roles.cache.some(r => r.name === nomeCargo)) {
-                await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo executado' });
+                await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo executed' });
             }
         }
         return interaction.editReply('🔥 Todos os 31 cargos temáticos de memes/TikTok foram gerados e injetados com sucesso!');
