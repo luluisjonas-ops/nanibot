@@ -1,16 +1,14 @@
 const TOKEN = process.env.DISCORD_TOKEN;
 const OWNER_ID = process.env.DISCORD_OWNER_ID;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
 const backup = require('discord-backup');
-const fetch = require('node-fetch'); 
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
-const BOT_VERSION = "1.1.0"; // Versão atualizada do Bot
+const BOT_VERSION = "1.1.0"; 
 
 const client = new Client({
     intents: [
@@ -25,7 +23,7 @@ const client = new Client({
 });
 
 const DATA_FILE = path.join(process.cwd(), 'bot_data.json');
-let config = { autoroleId: null, usuariosAgurdando: [], ultimoBackupId: null, warns: {}, warnLimit: 3, logsChannelId: null, neural: { members: {} }, filtroXingamentosAtivo: true };
+let config = { autoroleId: null, usuariosAgurdando: [], ultimoBackupId: null, warns: {}, warnLimit: 3, logsChannelId: null, filtroXingamentosAtivo: true };
 
 try { if (fs.existsSync(DATA_FILE)) { const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8')); config = { ...config, ...saved }; } } catch (e) {}
 function saveConfig() { try { fs.writeFileSync(DATA_FILE, JSON.stringify(config, null, 4)); } catch(e) {} }
@@ -37,65 +35,15 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-async function perguntarParaIA(promptTexto, historicoAnterior = []) {
-    if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
-    
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-    
-    const contents = [
-        {
-            role: "user",
-            parts: [{ text: "CONDIÇÃO DE SISTEMA: Você é o Nero/NaniBot, um assistente virtual gótico altamente inteligente, autêntico, adaptável e com um toque de sagacidade. Fale de igual para igual, de forma direta, clara e prestativa. Evite respostas robóticas, seja foda e use gírias naturais se o usuário também usar. Entendido?" }]
-        },
-        {
-            role: "model",
-            parts: [{ text: "Entendido perfeitamente. Sou o Nero, inteligência pura, gótico, direto ao ponto e sem respostas de robô. Pode mandar." }]
-        }
-    ];
-    
-    historicoAnterior.forEach(msg => {
-        contents.push({
-            role: msg.role === "model" ? "model" : "user",
-            parts: [{ text: msg.text }]
-        });
-    });
-    
-    contents.push({
-        role: "user",
-        parts: [{ text: promptTexto }]
-    });
-
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-            contents: contents,
-            generationConfig: {
-                temperature: 0.7,
-                topP: 0.95,
-                topK: 40,
-                maxOutputTokens: 2048,
-            }
-        })
-    });
-
-    if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error?.message || `Erro HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Processei tudo aqui, mas veio vazio. Manda de novo!";
-}
-
+// CORRIGIDO: Agora usa a variável correta (embedsExtras) sem quebrar o envio
 async function enviarDM(titulo, message, cor, embedsExtras = []) {
     try {
         if (!OWNER_ID) return terminalLog('warn', 'OWNER_ID não configurado no arquivo .env.');
         const owner = await client.users.fetch(OWNER_ID, { force: true });
         const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
-        await owner.send({ embeds: [embed, ...embedExtras] });
+        await owner.send({ embeds: [embed, ...embedsExtras] });
     } catch (e) {
-        terminalLog('error', `Falha crítica ao enviar DM para o Owner (${OWNER_ID}): ${e.message}. Verifique se as DMs estão abertas.`);
+        terminalLog('error', `Falha crítica real ao enviar DM para o Owner (${OWNER_ID}): ${e.message}`);
     }
 }
 
@@ -158,32 +106,6 @@ const PALAVROES = [
     'desgraçado', 'desgraca', 'vagabundo', 'vgb', 'cacete', 'cct', 'desgraça', 'puto', 'pqp', 'filho de uma puta', 'ramelao', 'otaria'
 ];
 
-function trackNeural(message) {
-    if (!config.neural) config.neural = { members: {} };
-    const m = config.neural.members;
-    const uid = message.author.id;
-    if (!m[uid]) m[uid] = { tag: message.author.tag, messages: 0, mentionedBy: {}, warns: 0, deletedMsgs: 0 };
-    m[uid].messages++;
-    m[uid].tag = message.author.tag;
-    message.mentions.users.forEach(user => {
-        if (user.id === uid || user.bot) return;
-        if (!m[user.id]) m[user.id] = { tag: user.tag, messages: 0, mentionedBy: {}, warns: 0, deletedMsgs: 0 };
-        m[user.id].mentionedBy[uid] = (m[user.id].mentionedBy[uid] || 0) + 1;
-    });
-}
-
-function gerarRelatorioNeural(guild) {
-    const m = config.neural?.members || {};
-    const entries = Object.entries(m).filter(([, d]) => d.messages > 0);
-    if (entries.length === 0) return null;
-    const topAtivos = [...entries].sort((a, b) => b[1].messages - a[1].messages).slice(0, 5);
-    const comInfluencia = entries.map(([id, d]) => {
-        const total = Object.values(d.mentionedBy || {}).reduce((a, b) => a + b, 0);
-        return { id, tag: d.tag, mencoes: total };
-    }).sort((a, b) => b.mencoes - a.mencoes).slice(0, 5).filter(x => x.mencoes > 0);
-    return { topAtivos, comInfluencia, total: entries.length };
-}
-
 function normalizarTexto(texto) {
     let formatado = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     formatado = formatado.replace(/4/g, 'a').replace(/3/g, 'e').replace(/1/g, 'i').replace(/0/g, 'o').replace(/7/g, 't');
@@ -204,8 +126,8 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    // NOTIFICAÇÃO OBRIGATÓRIA DE ATUALIZAÇÃO VIA DM
-    await enviarDM("🚀 Status do Sistema", `Nero atualizado com sucesso.`, '#00FF00');
+    // Dispara a DM de atualização (agora sem travar no erro interno)
+    await enviarDM("🚀 Status do Sistema", `Nero atualizado com sucesso para a versão \`v${BOT_VERSION}\`.`, '#00FF00');
 
     const commands = [
         new SlashCommandBuilder().setName('versao').setDescription('Exibe a versão atual de compilação do bot.'),
@@ -224,7 +146,6 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('warn').setDescription('Adiciona advertência.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)).addStringOption(o => o.setName('motivo').setDescription('Motivo').setRequired(true)),
         new SlashCommandBuilder().setName('warns').setDescription('Ver advertências.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)),
         new SlashCommandBuilder().setName('limpar-warns').setDescription('Remove advertências.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)),
-        new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa de atividade do Neural.'),
         new SlashCommandBuilder().setName('filtro-xingamentos').setDescription('Ativa/desativa a remoção de xingamentos.').addStringOption(o => o.setName('status').setDescription('Status').setRequired(true).addChoices({ name: 'Ativar Filtro', value: 'ativar' }, { name: 'Desativar Filtro', value: 'desativar' }))
     ];
 
@@ -238,46 +159,6 @@ client.on('ready', async () => {
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
-    trackNeural(message);
-
-    const foiMarcado = message.mentions.has(client.user) && !message.content.includes('@everyone') && !message.content.includes('@here');
-    let ehRespostaAoBot = false;
-    if (message.reference) {
-        try {
-            const msgRef = await message.channel.messages.fetch(message.reference.messageId);
-            if (msgRef && msgRef.author.id === client.user.id) ehRespostaAoBot = true;
-        } catch(e) {}
-    }
-
-    if (foiMarcado || ehRespostaAoBot) {
-        try {
-            await message.channel.sendTyping();
-            let historico = [];
-            let textoLimpo = message.content.replace(`<@${client.user.id}>`, '').trim();
-
-            if (message.reference) {
-                try {
-                    const msgAntiga = await message.channel.messages.fetch(message.reference.messageId);
-                    if (msgAntiga) {
-                        if (msgAntiga.author.id === client.user.id) {
-                            historico.push({ role: "user", text: "O que você me respondeu antes?" });
-                            historico.push({ role: "model", text: msgAntiga.content });
-                        } else {
-                            historico.push({ role: "user", text: msgAntiga.content });
-                        }
-                    }
-                } catch (e) {}
-            }
-
-            const respostaIa = await perguntarParaIA(textoLimpo, historico);
-            return message.reply(respostaIa);
-
-        } catch (err) {
-            terminalLog('error', `Erro na IA: ${err.message}`);
-            await enviarDM("❌ Falha Crítica no Gemini API", `**Mensagem do Erro:**\n\`\`\`text\n${err.message}\n\`\`\`\n**Localização:** Evento \`messageCreate\` (Resposta da Inteligência Artificial)`, '#FF0000');
-            return message.reply("Deu um piripaque na minha IA. Já mandei os detalhes do erro pro meu dono no privado.");
-        }
-    }
 
     if (config.filtroXingamentosAtivo === false) return;
     
@@ -311,7 +192,6 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, options, guild } = interaction;
 
-    // EXECUÇÃO DO COMANDO DE VERSÃO (ABERTO A TODOS OS USUÁRIOS)
     if (commandName === 'versao') {
         const embedVersao = new EmbedBuilder()
             .setColor('#2C2A4A')
@@ -431,18 +311,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply('🔥 Todos os 31 cargos temáticos de memes/TikTok foram gerados e injetados com sucesso!');
     }
 
-    if (commandName === 'neural') {
-        const relatorio = gerarRelatorioNeural(guild);
-        if (!relatorio) return interaction.reply('Dados insuficientes no subsistema neural.');
-        const embed = new EmbedBuilder().setTitle('Subsistema Neural — Análise').setColor('#2C2A4A');
-        embed.addFields([
-            { name: 'Membros Monitorados', value: `${relatorio.total}`, inline: true },
-            { name: 'Mais Ativos', value: relatorio.topAtivos.map(x => `${x[1].tag}: ${x[1].messages} msgs`).join('\n') || 'Nenhum' },
-            { name: 'Maior Influência', value: relatorio.comInfluencia.map(x => `${x.tag}: mencionado ${x.mencoes} vezes`).join('\n') || 'Nenhum' }
-        ]);
-        return interaction.reply({ embeds: [embed] });
-    }
-
     if (commandName === 'proxxy') {
         let ch = guild.channels.cache.find(c => c.name === './/Proxxy') || await guild.channels.create({ name: './/Proxxy', type: ChannelType.GuildVoice });
         joinVoiceChannel({ channelId: ch.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
@@ -461,6 +329,12 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply('Restaurando...');
         await backup.load(config.ultimoBackupId, guild);
     }
+});
+
+// Tratamento global de erros para capturar falhas de execução e te avisar na DM de forma limpa
+process.on('unhandledRejection', async (reason) => {
+    terminalLog('error', `Rejeição não tratada: ${reason}`);
+    await enviarDM("❌ Falha de Execução Interna", `**Erro detectado:**\n\`\`\`text\n${reason}\n\`\`\``, '#FF0000');
 });
 
 client.login(TOKEN);
