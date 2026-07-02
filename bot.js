@@ -5,7 +5,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
 const backup = require('discord-backup');
-const fetch = require('node-fetch'); // Usando o node-fetch do seu package.json
+const fetch = require('node-fetch'); 
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -41,7 +41,6 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// Função para chamar a API do Gemini via node-fetch sem precisar de pacotes extras
 async function perguntarParaIA(promptTexto) {
     if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
     
@@ -152,7 +151,6 @@ function gerarRelatorioNeural(guild) {
         return { id, tag: d.tag, mencoes: total };
     }).sort((a, b) => b.mencoes - a.mencoes).slice(0, 5).filter(x => x.mencoes > 0);
 
-    const pairs = [];
     return { topAtivos, comInfluencia, grupos: [], conflitos: [], total: entries.length };
 }
 
@@ -167,6 +165,15 @@ function normalizarTexto(texto) {
 
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => { res.writeHead(200); res.end('NaniBot online'); }).listen(PORT);
+
+client.on('guildMemberAdd', async (member) => {
+    if (config.autoroleId) {
+        try {
+            const role = member.guild.roles.cache.get(config.autoroleId);
+            if (role) await member.roles.add(role);
+        } catch(e) {}
+    }
+});
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
@@ -188,8 +195,6 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('warn-limite').setDescription('[OWNER] Define limite de warns.').addIntegerOption(o => o.setName('numero').setDescription('Número').setRequired(true).setMinValue(1).setMaxValue(10)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa do Neural.'),
         new SlashCommandBuilder().setName('filtro-xingamentos').setDescription('Ativa ou desativa a remoção automática de xingamentos.').addStringOption(o => o.setName('status').setDescription('Status').setRequired(true).addChoices({ name: 'Ativar Filtro', value: 'ativar' }, { name: 'Desativar Filtro', value: 'desativar' })),
-        
-        // COMANDO DE CONVERSA
         new SlashCommandBuilder().setName('conversa').setDescription('Conversar com a IA do bot.').addStringOption(o => o.setName('mensagem').setDescription('Sua mensagem').setRequired(true))
     ];
 
@@ -205,7 +210,6 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     trackNeural(message);
 
-    // Resposta automática caso marque o bot no chat
     if (message.mentions.has(client.user) && !message.content.includes('@everyone') && !message.content.includes('@here')) {
         try {
             await message.channel.sendTyping();
@@ -223,7 +227,14 @@ client.on('messageCreate', async (message) => {
     const palavraoEncontrado = PALAVROES.find(p => textoNorm.includes(normalizarTexto(p)));
     if (!palavraoEncontrado) return;
 
-    try { await message.delete(); } catch (e) {}
+    try { 
+        await message.delete();
+        if (!config.warns[message.author.id]) config.warns[message.author.id] = [];
+        config.warns[message.author.id].push({ motivo: 'Uso de vocabulário proibido (Filtro Ativo)', data: new Date().toLocaleDateString() });
+        saveConfig();
+        
+        await enviarLog(message.guild, '🛡️ Mensagem Retida', `Mensagem de ${message.author} deletada por conter xingamentos.`, '#FF0000', [{ name: 'Conteúdo original', value: `||${message.content}||` }]);
+    } catch (e) {}
 });
 
 client.on('interactionCreate', async interaction => {
@@ -233,7 +244,6 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'conversa') {
         await interaction.deferReply();
         const textoUsuario = options.getString('mensagem');
-
         try {
             const respostaIa = await perguntarParaIA(textoUsuario);
             return interaction.editReply(respostaIa);
@@ -246,10 +256,116 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: '⛔ Sem permissão.', ephemeral: true });
     }
 
-    // Mantendo as estruturas padrões de comando abaixo...
+    if (commandName === 'autorole') {
+        const role = options.getRole('cargo');
+        config.autoroleId = role.id;
+        saveConfig();
+        return interaction.reply(`✅ Cargo de entrada definido para: ${role}`);
+    }
+
     if (commandName === 'filtro-xingamentos') {
         const escolha = options.getString('status');
         if (escolha === 'ativar') { config.filtroXingamentosAtivo = true; saveConfig(); return interaction.reply({ content: '🛡️ Filtro Ativado.' }); }
         else { config.filtroXingamentosAtivo = false; saveConfig(); return interaction.reply({ content: '🔓 Filtro Desativado.' }); }
     }
+
+    if (commandName === 'limpar') {
+        const qtd = options.getInteger('quantidade');
+        await interaction.channel.bulkDelete(Math.min(qtd, 100), true);
+        return interaction.reply({ content: `🧹 Eliminadas ${qtd} mensagens do histórico.`, ephemeral: true });
+    }
+
+    if (commandName === 'warn') {
+        const membro = options.getUser('membro');
+        const motivo = options.getString('motivo');
+        if (!config.warns[membro.id]) config.warns[membro.id] = [];
+        config.warns[membro.id].push({ motivo, data: new Date().toLocaleDateString() });
+        saveConfig();
+        await enviarLog(guild, '⚠️ Advertência Aplicada', `Membro: ${membro}\nMotivo: ${motivo}`, '#FFA500');
+        return interaction.reply(`⚠️ ${membro} foi advertido. Motivo: ${motivo}`);
+    }
+
+    if (commandName === 'warns') {
+        const membro = options.getUser('membro');
+        const lista = config.warns[membro.id] || [];
+        if (lista.length === 0) return interaction.reply(`O membro ${membro} está com o prontuário limpo.`);
+        const txt = lista.map((w, i) => `${i+1}. [${w.data}] - ${w.motivo}`).join('\n');
+        return interaction.reply(`Histórico de ${membro}:\n${txt}`);
+    }
+
+    if (commandName === 'limpar-warns') {
+        const membro = options.getUser('membro');
+        config.warns[membro.id] = [];
+        saveConfig();
+        return interaction.reply(`✅ Histórico de advertências de ${membro} foi zerado.`);
+    }
+
+    if (commandName === 'ban') {
+        const membro = options.getUser('membro');
+        const motivo = options.getString('motivo') || 'Sem motivo especificado.';
+        await guild.members.ban(membro.id, { reason: motivo });
+        return interaction.reply(`🔨 ${membro.tag} foi banido permanente. Motivo: ${motivo}`);
+    }
+
+    if (commandName === 'kick') {
+        const membro = options.getUser('membro');
+        const motivo = options.getString('motivo') || 'Sem motivo especificado.';
+        const target = await guild.members.fetch(membro.id);
+        await target.kick(motivo);
+        return interaction.reply(`👢 ${membro.tag} foi expulso do servidor.`);
+    }
+
+    if (commandName === 'mute') {
+        const membro = options.getUser('membro');
+        const tempo = options.getInteger('tempo');
+        const target = await guild.members.fetch(membro.id);
+        await target.timeout(tempo * 60 * 1000, 'Penalidade via comando');
+        return interaction.reply(`🤫 ${membro} foi silenciado por ${tempo} minutos.`);
+    }
+
+    if (!isOwner(interaction.user.id)) {
+        return interaction.reply({ content: '⛔ Comando restrito apenas ao Dono.', ephemeral: true });
+    }
+
+    if (commandName === 'setup-logs') {
+        const ch = await getOrCreateLogsChannel(guild);
+        return interaction.reply(`Logs configurados no canal ${ch}`);
+    }
+
+    if (commandName === 'proxxy') {
+        let ch = guild.channels.cache.find(c => c.name === './/Proxxy');
+        if (!ch) {
+            ch = await guild.channels.create({ name: './/Proxxy', type: ChannelType.GuildVoice });
+        }
+        const connection = joinVoiceChannel({ channelId: ch.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+        return interaction.reply(`Conectado silenciosamente ao canal ${ch.name}`);
+    }
+
+    if (commandName === 'salvar-servidor') {
+        await interaction.reply('Iniciando backup completo...');
+        const bData = await backup.create(guild, { maxMessagesPerChannel: 10 });
+        config.ultimoBackupId = bData.id;
+        saveConfig();
+        return interaction.editReply(`Backup estrutural gerado com sucesso. ID: \`${bData.id}\``);
+    }
+
+    if (commandName === 'carregar-servidor') {
+        if (!config.ultimoBackupId) return interaction.reply('Nenhum backup encontrado nos registros.');
+        await interaction.reply('Restaurando infraestrutura...');
+        await backup.load(config.ultimoBackupId, guild);
+    }
+
+    if (commandName === 'neural') {
+        const relatorio = gerarRelatorioNeural(guild);
+        if (!relatorio) return interaction.reply('Dados insuficientes no subsistema neural.');
+        const embed = new EmbedBuilder().setTitle('Subsistema Neural — Relatório de Atividade').setColor('#2C2A4A');
+        embed.addFields([
+            { name: 'Membros Analisados', value: `${relatorio.total}`, inline: true },
+            { name: 'Mais Ativos', value: relatorio.topAtivos.map(x => `${x[1].tag}: ${x[1].messages} msgs`).join('\n') || 'Nenhum' }
+        ]);
+        return interaction.reply({ embeds: [embed] });
+    }
 });
+
+// A LINHA DO LOGIN QUE ESTAVA FALTANDO PARA DEIXAR ONLINE:
+client.login(TOKEN);
