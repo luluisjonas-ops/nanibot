@@ -21,7 +21,8 @@ const client = new Client({
 });
 
 const DATA_FILE = path.join(process.cwd(), 'bot_data.json');
-let config = { autoroleId: null, usuariosAgurdando: [], ultimoBackupId: null, warns: {}, warnLimit: 3, logsChannelId: null, neural: { members: {} } };
+// Adicionado 'filtroXingamentosAtivo: true' por padrão na inicialização do config
+let config = { autoroleId: null, usuariosAgurdando: [], ultimoBackupId: null, warns: {}, warnLimit: 3, logsChannelId: null, neural: { members: {} }, filtroXingamentosAtivo: true };
 const proxxySession = new Map();
 
 const C = { reset: "\x1b[0m", green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m" };
@@ -148,7 +149,7 @@ function gerarRelatorioNeural(guild) {
     pares.forEach(par => {
         if (visitados.has(par.a) && visitados.has(par.b)) return;
         const grupo = new Set([par.a, par.b]);
-        pares.forEach(p2 => { if (grupo.has(p2.a) || grupo.has(p2.b)) { grupo.add(p2.a); grupo.add(p2.b); } });
+        pares.forEach(p2 => { if (grupo.has(p2.a) || group.has(p2.b)) { grupo.add(p2.a); grupo.add(p2.b); } });
         const key = [...grupo].sort().join('-');
         if (!grupos.find(g => g.key === key)) { grupos.push({ key, membros: [...grupo] }); grupo.forEach(id => visitados.add(id)); }
     });
@@ -197,7 +198,9 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('warn-limite').setDescription('[OWNER] Define limite de warns.').addIntegerOption(o => o.setName('numero').setDescription('Número').setRequired(true).setMinValue(1).setMaxValue(10)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa: panelinhas, influentes, conflitos.'),
         new SlashCommandBuilder().setName('neural-reset').setDescription('[OWNER] Apaga todos os dados coletados pelo Neural.'),
-        new SlashCommandBuilder().setName('cargos').setDescription('Gera o setup de 1 Admin + 31 Cargos baseados nas trends e brainrots do TikTok de 2026.')
+        new SlashCommandBuilder().setName('cargos').setDescription('Gera o setup de 1 Admin + 31 Cargos baseados nas trends e brainrots do TikTok de 2026.'),
+        // NOVO COMANDO ADICIONADO PARA LIGAR/DESLIGAR O FILTRO
+        new SlashCommandBuilder().setName('filtro-xingamentos').setDescription('Ativa ou desativa a remoção automática de xingamentos.').addStringOption(o => o.setName('status').setDescription('Escolha se quer o filtro ligado ou desligado').setRequired(true).addChoices({ name: 'Ativar Filtro', value: 'ativar' }, { name: 'Desativar Filtro (Sem Xingamentos)', value: 'desativar' }))
     ];
 
     try {
@@ -215,6 +218,10 @@ client.on('ready', async () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     trackNeural(message);
+
+    // CHECAGEM DO NOVO FILTRO: Se estiver desativado por comando, ignora a filtragem abaixo
+    if (config.filtroXingamentosAtivo === false) return;
+
     const textoNorm = normalizarTexto(message.content);
     const palavraoEncontrado = PALAVROES.find(p => textoNorm.includes(normalizarTexto(p)));
     if (!palavraoEncontrado) return;
@@ -449,7 +456,7 @@ client.on('interactionCreate', async interaction => {
         try {
             await alvo.timeout(tempo * 60 * 1000, 'Castigado por staff.');
             await enviarLog(guild, '⏸️ Membro Silenciado', `Timeout aplicado.`, '#FFAA00', [{ name: 'Silenciado', value: `\`${alvo.user.tag}\``, inline: true }, { name: 'ID', value: `\`${alvo.id}\``, inline: true }, { name: 'Por', value: `\`${interaction.user.tag}\``, inline: true }, { name: 'Duração', value: `\`${tempo}min\``, inline: true }]);
-            return interaction.reply({ content: `⚖️ ${alvo} silenciado por ${tempo} minutos.` });
+            return interaction.reply({ content: `⚖️ ${alvo} silenciado por ${tempo} minutes.` });
         } catch (e) { return interaction.reply({ content: `Erro ao silenciar.`, ephemeral: true }); }
     }
 
@@ -473,7 +480,6 @@ client.on('interactionCreate', async interaction => {
         } catch (e) { return interaction.reply({ content: `Erro ao alterar apelido.`, ephemeral: true }); }
     }
 
-    // COMANDO SOLICITADO /CARGOS ADICIONADO AQUI
     if (commandName === 'cargos') {
         await interaction.deferReply({ ephemeral: true });
 
@@ -539,6 +545,23 @@ client.on('interactionCreate', async interaction => {
         ]);
 
         return interaction.editReply({ content: `✅ Operação Concluída! **${criados}** cargos criados (incluindo o cargo administrativo único \`adm\`). Falhas: ${erros}.` });
+    }
+
+    // EXECUÇÃO DO NOVO COMANDO ALTERNADOR DO FILTRO
+    if (commandName === 'filtro-xingamentos') {
+        const escolha = options.getString('status');
+        
+        if (escolha === 'ativar') {
+            config.filtroXingamentosAtivo = true;
+            saveConfig();
+            await enviarLog(guild, '🛡️ Filtro de Palavrões Ativado', `O sistema voltou a apagar e punir xingamentos automaticamente.`, '#00FF88', [{ name: 'Por', value: `\`${interaction.user.tag}\`` }]);
+            return interaction.reply({ content: '🛡️ **Filtro Ativado!** O Nero voltou a apagar xingamentos automaticamente no chat.' });
+        } else if (escolha === 'desativar') {
+            config.filtroXingamentosAtivo = false;
+            saveConfig();
+            await enviarLog(guild, '🔓 Filtro de Palavrões Desativado (Sem xingamentos)', `O bot parou de monitorar e apagar palavras proibidas temporariamente.`, '#FF8800', [{ name: 'Por', value: `\`${interaction.user.tag}\`` }]);
+            return interaction.reply({ content: '🔓 **Filtro Desativado!** Modo "Sem Xingamentos" ativo: o bot não vai mais apagar ou dar warn por palavrões.' });
+        }
     }
 
     if (commandName === 'salvar-servidor') {
