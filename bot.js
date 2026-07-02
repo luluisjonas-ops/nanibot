@@ -557,6 +557,9 @@ client.on('interactionCreate', async interaction => {
         const cargoSrMod = await guild.roles.create({ name: '⚖️ Senior Moderator', color: '#25292F', hoist: true, permissions: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages] });
         const cargoMod = await guild.roles.create({ name: '⚔️ Moderator', color: '#2F343C', hoist: true, permissions: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages] });
         const cargoInspector = await guild.roles.create({ name: '👁️ Inspector', color: '#3A404A', hoist: true, permissions: [PermissionFlagsBits.ViewChannel] });
-        const cargoHelper = await guild.roles.create({ name: '⚡ Staff Helper', color: '#464D59', hoist: true, permissions: [PermissionFlagsBits.View **...**
-
-_This response is too long to display in full._
+     const cargoHelper = await guild.roles.create({
+    name: '⚡ Staff Helper',
+    color: '#464D59',
+    hoist: true,
+    permissions: [PermissionFlagsBits.ViewChannel]
+});
