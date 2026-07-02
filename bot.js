@@ -35,7 +35,7 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// CORREÇÃO DEFINITIVA DO ENDPOINT PARA ENGINES EXTERNAS USANDO ROTA DE CONTEÚDO CORRETA
+// ABORDAGEM DE CONEXÃO RESTAURADA E CORRIGIDA PARA CORPO DE REQUISIÇÃO DIRETA DA API DO GEMINI
 async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
     
@@ -67,7 +67,15 @@ async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: contents })
+        body: JSON.stringify({ 
+            contents: contents,
+            generationConfig: {
+                temperature: 0.7,
+                topP: 0.95,
+                topK: 40,
+                maxOutputTokens: 2048,
+            }
+        })
     });
 
     if (!response.ok) {
@@ -111,13 +119,12 @@ async function getOrCreateLogsChannel(guild) {
     } catch (e) { return null; }
 }
 
-// SISTEMA DE LOGS EXTREMAMENTE AVANÇADO, ESTILIZADO E DETALHADO (DM + CANAL)
+// CORRIGIDO: REMOVIDO ENVIO DE MENSAGENS COMUNS DE MODERAÇÃO PARA O SEU PRIVADO. MANTIDO APENAS NO SERVIDOR.
 async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuario = null) {
     try {
         const canalLogs = await getOrCreateLogsChannel(guild);
         const corFinal = cor || '#0B0A14';
         
-        // Estruturação Premium do Painel Visual do Servidor
         const embedServidor = new EmbedBuilder()
             .setAuthor({ name: 'Nero Moderation Security', iconURL: client.user.displayAvatarURL({ dynamic: true }) })
             .setTitle(`🛡️ Sistema de Monitoramento — ${titulo}`)
@@ -137,43 +144,8 @@ async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuar
         }
 
         if (canalLogs) await canalLogs.send({ embeds: [embedServidor] });
-
-        // Envio Privado Hiper Detalhado para o Owner no Privado
-        if (OWNER_ID) {
-            const owner = await client.users.fetch(OWNER_ID);
-            
-            const embedPrivado = new EmbedBuilder()
-                .setAuthor({ name: 'Nero Dev Notification Center', iconURL: client.user.displayAvatarURL({ dynamic: true }) })
-                .setTitle(`🚨 ALERTA DE DIRETRIZ CRÍTICA: ${titulo}`)
-                .setDescription(`Olá Administrador Supremo, um evento relevante exigiu a intervenção das diretrizes internas automatizadas. Aqui está o relatório analítico:`)
-                .setColor(corFinal)
-                .setFields([
-                    { name: '🌐 Origem da Execução', value: `🏰 **Servidor:** \`${guild.name}\`\n🆔 **ID da Guild:** \`${guild.id}\``, inline: true },
-                    { name: '📂 Contexto Operacional', value: `📄 **Ação:** ${descricao}`, inline: true }
-                ])
-                .setTimestamp()
-                .setFooter({ text: 'Relatório Exclusivo do Desenvolvedor • Criptografia Ativa', iconURL: owner.displayAvatarURL({ dynamic: true }) });
-
-            if (campos && campos.length > 0) {
-                embedPrivado.addFields([{ name: '📊 Métricas Capturadas e Parâmetros', value: campos.map(c => `🔹 **${c.name}:** ${c.value}`).join('\n') }]);
-            }
-
-            if (informacoesUsuario) {
-                const memberInGuild = await guild.members.fetch(informacoesUsuario.id).catch(() => null);
-                const entrouNoServer = memberInGuild ? `<t:${Math.floor(memberInGuild.joinedTimestamp / 1000)}:R>` : 'Desconhecido';
-                const contaCriada = `<t:${Math.floor(informacoesUsuario.createdTimestamp / 1000)}:R>`;
-                
-                embedPrivado.addFields([{
-                    name: '🎯 Análise de Metadados do Usuário',
-                    value: `• **Identificador:** ${informacoesUsuario}\n• **Tag Global:** \`${informacoesUsuario.tag}\`\n• **ID Estático:** \`${informacoesUsuario.id}\`\n• **Criação da Conta:** ${contaCriada}\n• **Ingresso na Guild:** ${entrouNoServer}`,
-                    inline: false
-                }]);
-            }
-
-            await owner.send({ embeds: [embedPrivado] });
-        }
     } catch (e) {
-        terminalLog('error', `Falha ao processar logs avançados: ${e.message}`);
+        terminalLog('error', `Falha ao processar logs: ${e.message}`);
     }
 }
 
@@ -298,7 +270,8 @@ client.on('messageCreate', async (message) => {
 
         } catch (err) {
             terminalLog('error', `Erro na IA: ${err.message}`);
-            await enviarDM("❌ Falha no Gemini API", `Erro detectado: ${err.message}`, '#FF0000');
+            // APENAS ERROS OPERACIONAIS CRÍTICOS SÃO ENVIADOS AQUI
+            await enviarDM("❌ Falha Crítica no Gemini API", `Erro detectado: ${err.message}`, '#FF0000');
             return message.reply("Deu um piripaque na minha IA. Já mandei os detalhes do erro pro meu dono no privado.");
         }
     }
@@ -316,7 +289,6 @@ client.on('messageCreate', async (message) => {
     if (contemPalavrao) {
         try { 
             await message.delete();
-            // CHAMA O NOVO CONTEÚDO DE LOG PREMIUM AUTOMÁTICO
             await enviarLog(
                 message.guild, 
                 'Mensagem Retida por Violação', 
@@ -406,7 +378,7 @@ client.on('interactionCreate', async interaction => {
         const tempo = options.getInteger('tempo');
         const target = await guild.members.fetch(membro.id);
         await target.timeout(tempo * 60 * 1000);
-        return interaction.reply(`🤫 Mutado por ${tempo} minutos.`);
+        return interaction.reply(`🤫 Mutado por ${tempo} minutes.`);
     }
 
     if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Restrito ao Dono.', ephemeral: true });
