@@ -41,6 +41,7 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
+// Função do Gemini tunada com puro suco de Brainrot do TikTok de 2026
 async function perguntarParaIA(promptTexto) {
     if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
     
@@ -51,20 +52,21 @@ async function perguntarParaIA(promptTexto) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             contents: [{
-                parts: [{ text: `Aja como o bot guardião gótico do servidor chamado Nero/NaniBot. Responda de forma direta, fria e autêntica à mensagem: ${promptTexto}` }]
+                parts: [{ text: `Você é o bot Nero/NaniBot. Seu humor é totalmente baseado nas trends do TikTok e puro brainrot de 2026 (use gírias como sigma, rizz, mewing, skibidi toilet, fanum tax, ohio, looksmaxxing, bop, cap, fr fr, chat is this real, bro thought he did something). Responda de forma curta, zoeira e extremamente irônica à mensagem: ${promptTexto}` }]
             }]
         })
     });
 
     const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Estou sem ideias agora...";
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Mano, meu cérebro derreteu... Sem sinal de internet no Ohio 💀";
 }
 
+// Suas DMs de atualizações e erros que você tinha pedido de volta
 async function enviarDM(titulo, message, cor) {
     try {
         if (!OWNER_ID) return;
         const owner = await client.users.fetch(OWNER_ID);
-        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(message).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Sistema de Logs' });
+        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(message).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Notificação Interna' });
         await owner.send({ embeds: [embed] });
     } catch (e) {}
 }
@@ -177,6 +179,10 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
+    
+    // Alerta o dono no privado sempre que o bot inicializar com sucesso
+    await enviarDM("🚀 Bot Inicializado", `Nero/NaniBot subiu com sucesso e está monitorando agora mesmo!`, '#00FF00');
+
     const commands = [
         new SlashCommandBuilder().setName('autorole').setDescription('Define cargo automático.').addRoleOption(o => o.setName('cargo').setDescription('Cargo').setRequired(true)),
         new SlashCommandBuilder().setName('setup-server').setDescription('[OWNER] Monta a infraestrutura gótica blindada.'),
@@ -194,8 +200,7 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('limpar-warns').setDescription('Remove advertências.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)),
         new SlashCommandBuilder().setName('warn-limite').setDescription('[OWNER] Define limite de warns.').addIntegerOption(o => o.setName('numero').setDescription('Número').setRequired(true).setMinValue(1).setMaxValue(10)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa do Neural.'),
-        new SlashCommandBuilder().setName('filtro-xingamentos').setDescription('Ativa ou desativa a remoção automática de xingamentos.').addStringOption(o => o.setName('status').setDescription('Status').setRequired(true).addChoices({ name: 'Ativar Filtro', value: 'ativar' }, { name: 'Desativar Filtro', value: 'desativar' })),
-        new SlashCommandBuilder().setName('conversa').setDescription('Conversar com a IA do bot.').addStringOption(o => o.setName('mensagem').setDescription('Sua mensagem').setRequired(true))
+        new SlashCommandBuilder().setName('filtro-xingamentos').setDescription('Ativa ou desativa a remoção automática de xingamentos.').addStringOption(o => o.setName('status').setDescription('Status').setRequired(true).addChoices({ name: 'Ativar Filtro', value: 'ativar' }, { name: 'Desativar Filtro', value: 'desativar' }))
     ];
 
     try {
@@ -210,6 +215,7 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     trackNeural(message);
 
+    // Resposta por marcação direta com Humor Brainrot 2026
     if (message.mentions.has(client.user) && !message.content.includes('@everyone') && !message.content.includes('@here')) {
         try {
             await message.channel.sendTyping();
@@ -217,7 +223,9 @@ client.on('messageCreate', async (message) => {
             const respostaIa = await perguntarParaIA(limpo);
             return message.reply(respostaIa);
         } catch (err) {
-            return message.reply("❌ Falha na conexão neural. Verifique se adicionou a chave GEMINI_API_KEY no painel do Render.");
+            // Te avisa na DM se a API Key do Gemini quebrar
+            await enviarDM("❌ Erro no Subsistema da IA", `Erro ao responder ${message.author.tag}: ${err.message}`, '#FF0000');
+            return message.reply("🚨 Erro Crítico de Conexão no Ohio, verifique meu terminal.");
         }
     }
 
@@ -240,17 +248,6 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, options, guild } = interaction;
-
-    if (commandName === 'conversa') {
-        await interaction.deferReply();
-        const textoUsuario = options.getString('mensagem');
-        try {
-            const respostaIa = await perguntarParaIA(textoUsuario);
-            return interaction.editReply(respostaIa);
-        } catch (error) {
-            return interaction.editReply(`❌ Erro de conexão com a IA. Configure a variável \`GEMINI_API_KEY\` no menu Environment do Render.`);
-        }
-    }
 
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages) && !isOwner(interaction.user.id)) {
         return interaction.reply({ content: '⛔ Sem permissão.', ephemeral: true });
@@ -337,7 +334,7 @@ client.on('interactionCreate', async interaction => {
         if (!ch) {
             ch = await guild.channels.create({ name: './/Proxxy', type: ChannelType.GuildVoice });
         }
-        const connection = joinVoiceChannel({ channelId: ch.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+        joinVoiceChannel({ channelId: ch.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
         return interaction.reply(`Conectado silenciosamente ao canal ${ch.name}`);
     }
 
@@ -367,5 +364,4 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// A LINHA DO LOGIN QUE ESTAVA FALTANDO PARA DEIXAR ONLINE:
 client.login(TOKEN);
