@@ -35,7 +35,7 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// CORRIGIDO: ROTA v1beta RESOLVE O ERRO DE SUPORTE DO MODELO
+// CORREÇÃO DEFINITIVA DO ENDPOINT PARA ENGINES EXTERNAS USANDO ROTA DE CONTEÚDO CORRETA
 async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
     
@@ -54,7 +54,7 @@ async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     
     historicoAnterior.forEach(msg => {
         contents.push({
-            role: msg.role,
+            role: msg.role === "model" ? "model" : "user",
             parts: [{ text: msg.text }]
         });
     });
@@ -79,12 +79,12 @@ async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Processei tudo aqui, mas veio vazio. Manda de novo!";
 }
 
-async function enviarDM(titulo, message, cor) {
+async function enviarDM(titulo, message, cor, embedsExtras = []) {
     try {
         if (!OWNER_ID) return;
         const owner = await client.users.fetch(OWNER_ID);
-        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(message).setTimestamp();
-        await owner.send({ embeds: [embed] });
+        const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
+        await owner.send({ embeds: [embed, ...embedExtras] });
     } catch (e) {}
 }
 
@@ -111,17 +111,72 @@ async function getOrCreateLogsChannel(guild) {
     } catch (e) { return null; }
 }
 
-async function enviarLog(guild, titulo, descricao, cor, campos) {
+// SISTEMA DE LOGS EXTREMAMENTE AVANÇADO, ESTILIZADO E DETALHADO (DM + CANAL)
+async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuario = null) {
     try {
-        const ch = await getOrCreateLogsChannel(guild);
-        if (!ch) return;
-        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(descricao).setTimestamp();
-        if (campos) embed.addFields(campos);
-        await ch.send({ embeds: [embed] });
-    } catch (e) {}
+        const canalLogs = await getOrCreateLogsChannel(guild);
+        const corFinal = cor || '#0B0A14';
+        
+        // Estruturação Premium do Painel Visual do Servidor
+        const embedServidor = new EmbedBuilder()
+            .setAuthor({ name: 'Nero Moderation Security', iconURL: client.user.displayAvatarURL({ dynamic: true }) })
+            .setTitle(`🛡️ Sistema de Monitoramento — ${titulo}`)
+            .setDescription(`${descricao}\n\n**Ocorrência registrada às:** <t:${Math.floor(Date.now() / 1000)}:F> (<t:${Math.floor(Date.now() / 1000)}:R>)`)
+            .setColor(corFinal)
+            .setThumbnail(guild.iconURL({ dynamic: true }) || null)
+            .setFooter({ text: `Guild ID: ${guild.id} • Nero CyberSec`, iconURL: client.user.displayAvatarURL() });
+
+        if (campos && campos.length > 0) {
+            embedServidor.addFields(campos);
+        }
+
+        if (informacoesUsuario) {
+            embedServidor.addFields([
+                { name: '👤 Infrator / Alvo', value: `**Tag:** \`${informacoesUsuario.tag}\`\n**Menção:** ${informacoesUsuario}\n**ID:** \`${informacoesUsuario.id}\``, inline: false }
+            ]);
+        }
+
+        if (canalLogs) await canalLogs.send({ embeds: [embedServidor] });
+
+        // Envio Privado Hiper Detalhado para o Owner no Privado
+        if (OWNER_ID) {
+            const owner = await client.users.fetch(OWNER_ID);
+            
+            const embedPrivado = new EmbedBuilder()
+                .setAuthor({ name: 'Nero Dev Notification Center', iconURL: client.user.displayAvatarURL({ dynamic: true }) })
+                .setTitle(`🚨 ALERTA DE DIRETRIZ CRÍTICA: ${titulo}`)
+                .setDescription(`Olá Administrador Supremo, um evento relevante exigiu a intervenção das diretrizes internas automatizadas. Aqui está o relatório analítico:`)
+                .setColor(corFinal)
+                .setFields([
+                    { name: '🌐 Origem da Execução', value: `🏰 **Servidor:** \`${guild.name}\`\n🆔 **ID da Guild:** \`${guild.id}\``, inline: true },
+                    { name: '📂 Contexto Operacional', value: `📄 **Ação:** ${descricao}`, inline: true }
+                ])
+                .setTimestamp()
+                .setFooter({ text: 'Relatório Exclusivo do Desenvolvedor • Criptografia Ativa', iconURL: owner.displayAvatarURL({ dynamic: true }) });
+
+            if (campos && campos.length > 0) {
+                embedPrivado.addFields([{ name: '📊 Métricas Capturadas e Parâmetros', value: campos.map(c => `🔹 **${c.name}:** ${c.value}`).join('\n') }]);
+            }
+
+            if (informacoesUsuario) {
+                const memberInGuild = await guild.members.fetch(informacoesUsuario.id).catch(() => null);
+                const entrouNoServer = memberInGuild ? `<t:${Math.floor(memberInGuild.joinedTimestamp / 1000)}:R>` : 'Desconhecido';
+                const contaCriada = `<t:${Math.floor(informacoesUsuario.createdTimestamp / 1000)}:R>`;
+                
+                embedPrivado.addFields([{
+                    name: '🎯 Análise de Metadados do Usuário',
+                    value: `• **Identificador:** ${informacoesUsuario}\n• **Tag Global:** \`${informacoesUsuario.tag}\`\n• **ID Estático:** \`${informacoesUsuario.id}\`\n• **Criação da Conta:** ${contaCriada}\n• **Ingresso na Guild:** ${entrouNoServer}`,
+                    inline: false
+                }]);
+            }
+
+            await owner.send({ embeds: [embedPrivado] });
+        }
+    } catch (e) {
+        terminalLog('error', `Falha ao processar logs avançados: ${e.message}`);
+    }
 }
 
-// EXPANDIDO: LISTA COMPLETA DE XINGAMENTOS, ABREVIAÇÕES DE TWITTER/TIKTOK E ENGENHARIA DE TEXTO
 const PALAVROES = [
     'porra', 'prr', 'caralho', 'crl', 'krl', 'krI', 'merda', 'mrd', 'bosta', 'bst', 'foda', 'foder', 'fdr', 'fodase', 'foda-se', 'fdms',
     'puta', 'pt', 'putaria', 'viado', 'vdo', 'vd', 'viadinho', 'cuzao', 'cuzão', 'cu', 'idiota', 'idta', 'imbecil', 'babaca', 'otario', 
@@ -156,7 +211,6 @@ function gerarRelatorioNeural(guild) {
 }
 
 function normalizarTexto(texto) {
-    // Normaliza acentos, remove caracteres especiais e substitui números óbvios que burlam o filtro (ex: c4r4lh0 -> caralho)
     let formatado = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     formatado = formatado.replace(/4/g, 'a').replace(/3/g, 'e').replace(/1/g, 'i').replace(/0/g, 'o').replace(/7/g, 't');
     return formatado.replace(/[^a-z0-9 ]/g, '');
@@ -176,7 +230,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    await enviarDM("🚀 Correção de Comandos", `Nero totalmente online. Comando /cargo restaurado e /setup-server corrigido!`, '#00FF00');
+    await enviarDM("🚀 Status do Sistema", `Nero atualizado com sucesso.`, '#00FF00');
 
     const commands = [
         new SlashCommandBuilder().setName('autorole').setDescription('Define cargo automático.').addRoleOption(o => o.setName('cargo').setDescription('Cargo').setRequired(true)),
@@ -244,27 +298,36 @@ client.on('messageCreate', async (message) => {
 
         } catch (err) {
             terminalLog('error', `Erro na IA: ${err.message}`);
-            await enviarDM("❌ Falha no Gemini API", `Erro: ${err.message}`, '#FF0000');
+            await enviarDM("❌ Falha no Gemini API", `Erro detectado: ${err.message}`, '#FF0000');
             return message.reply("Deu um piripaque na minha IA. Já mandei os detalhes do erro pro meu dono no privado.");
         }
     }
 
     if (config.filtroXingamentosAtivo === false) return;
     
-    // Varre o texto quebrando por palavras e analisando substrings
     const textoNorm = normalizarTexto(message.content);
     const palavrasDoTexto = textoNorm.split(/\s+/);
     
     const contemPalavrao = PALAVROES.some(p => {
         const pNorm = normalizarTexto(p);
-        // Bloqueia se a palavra exata existir ou se for uma substring perigosa
         return palavrasDoTexto.includes(pNorm) || textoNorm.includes(pNorm);
     });
 
     if (contemPalavrao) {
         try { 
             await message.delete();
-            await enviarLog(message.guild, '🛡️ Mensagem Retida', `Mensagem de ${message.author} deletada por conter xingamentos ou abreviações proibidas.`, '#FF0000', [{ name: 'Conteúdo', value: `||${message.content}||` }]);
+            // CHAMA O NOVO CONTEÚDO DE LOG PREMIUM AUTOMÁTICO
+            await enviarLog(
+                message.guild, 
+                'Mensagem Retida por Violação', 
+                `Uma mensagem foi interceptada e expurgada automaticamente do canal ${message.channel}.`, 
+                '#D32F2F', 
+                [
+                    { name: '💬 Conteúdo Bruto Filtrado', value: `|| ${message.content} ||`, inline: false },
+                    { name: '📍 Canal Relacionado', value: `${message.channel} (\`#${message.channel.name}\`)`, inline: true }
+                ],
+                message.author
+            );
         } catch (e) {}
     }
 });
@@ -285,7 +348,7 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'filtro-xingamentos') {
         const escolha = options.getString('status');
-        config.filtroXingamentosAtivo = (choice === 'ativar' || escolha === 'ativar'); saveConfig();
+        config.filtroXingamentosAtivo = (escolha === 'ativar'); saveConfig();
         return interaction.reply({ content: config.filtroXingamentosAtivo ? '🛡️ Filtro Ativado.' : '🔓 Filtro Desativado.' });
     }
 
