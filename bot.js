@@ -10,6 +10,8 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
+const BOT_VERSION = "1.1.0"; // Versão atualizada do Bot
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -86,16 +88,14 @@ async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Processei tudo aqui, mas veio vazio. Manda de novo!";
 }
 
-// CORRIGIDO: FORÇA A BUSCA DE USUÁRIO DIRETO PELA API CASO NÃO ESTEJA NO CACHE PARA GARANTIR O ENVIO DA DM
 async function enviarDM(titulo, message, cor, embedsExtras = []) {
     try {
-        if (!OWNER_ID) return;
-        // Força o fetch completo da API do Discord caso o cache do client ainda não tenha carregado o usuário
+        if (!OWNER_ID) return terminalLog('warn', 'OWNER_ID não configurado no arquivo .env.');
         const owner = await client.users.fetch(OWNER_ID, { force: true });
         const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
         await owner.send({ embeds: [embed, ...embedExtras] });
     } catch (e) {
-        terminalLog('error', `Falha crítica ao enviar DM de erro para o Owner: ${e.message}`);
+        terminalLog('error', `Falha crítica ao enviar DM para o Owner (${OWNER_ID}): ${e.message}. Verifique se as DMs estão abertas.`);
     }
 }
 
@@ -109,7 +109,7 @@ async function getOrCreateLogsChannel(guild) {
         const ch = await guild.channels.create({
             name: './/nero-logs',
             type: ChannelType.GuildText,
-            topic: 'Sistema de logs privado — NaniBot Nero v2.4.1',
+            topic: `Sistema de logs privado — NaniBot Nero v${BOT_VERSION}`,
             permissionOverwrites: [
                 { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
@@ -204,10 +204,11 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    // CONFIGURADO: NOTIFICAÇÃO DO BOT ATUALIZADO VAI DIRETO PARA A DM
+    // NOTIFICAÇÃO OBRIGATÓRIA DE ATUALIZAÇÃO VIA DM
     await enviarDM("🚀 Status do Sistema", `Nero atualizado com sucesso.`, '#00FF00');
 
     const commands = [
+        new SlashCommandBuilder().setName('versao').setDescription('Exibe a versão atual de compilação do bot.'),
         new SlashCommandBuilder().setName('autorole').setDescription('Define cargo automático.').addRoleOption(o => o.setName('cargo').setDescription('Cargo').setRequired(true)),
         new SlashCommandBuilder().setName('setup-server').setDescription('[OWNER] Monta a infraestrutura gótica de canais do servidor.'),
         new SlashCommandBuilder().setName('cargo').setDescription('[OWNER] Cria os 31 cargos temáticos estilo TikTok memes 2026.'),
@@ -273,7 +274,6 @@ client.on('messageCreate', async (message) => {
 
         } catch (err) {
             terminalLog('error', `Erro na IA: ${err.message}`);
-            // ENVIANDO DETALHES CRÍTICOS DO ERRO PARA A DM DO OWNER (CONVERSÃO FORÇADA VIA API)
             await enviarDM("❌ Falha Crítica no Gemini API", `**Mensagem do Erro:**\n\`\`\`text\n${err.message}\n\`\`\`\n**Localização:** Evento \`messageCreate\` (Resposta da Inteligência Artificial)`, '#FF0000');
             return message.reply("Deu um piripaque na minha IA. Já mandei os detalhes do erro pro meu dono no privado.");
         }
@@ -310,6 +310,18 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, options, guild } = interaction;
+
+    // EXECUÇÃO DO COMANDO DE VERSÃO (ABERTO A TODOS OS USUÁRIOS)
+    if (commandName === 'versao') {
+        const embedVersao = new EmbedBuilder()
+            .setColor('#2C2A4A')
+            .setTitle('⚙️ Especificações de Compilação')
+            .setDescription(`Atualmente operando sob a build estável estrutural.\n\n🤖 **Versão do Sistema:** \`v${BOT_VERSION}\``)
+            .setTimestamp()
+            .setFooter({ text: `${client.user.username} Core`, iconURL: client.user.displayAvatarURL() });
+            
+        return interaction.reply({ embeds: [embedVersao] });
+    }
 
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages) && !isOwner(interaction.user.id)) {
         return interaction.reply({ content: '⛔ Sem permissão.', ephemeral: true });
