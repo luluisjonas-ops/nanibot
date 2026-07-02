@@ -35,7 +35,6 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// ABORDAGEM DE CONEXÃO RESTAURADA E CORRIGIDA PARA CORPO DE REQUISIÇÃO DIRETA DA API DO GEMINI
 async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     if (!GEMINI_API_KEY) throw new Error("Chave GEMINI_API_KEY ausente.");
     
@@ -87,13 +86,17 @@ async function perguntarParaIA(promptTexto, historicoAnterior = []) {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Processei tudo aqui, mas veio vazio. Manda de novo!";
 }
 
+// CORRIGIDO: FORÇA A BUSCA DE USUÁRIO DIRETO PELA API CASO NÃO ESTEJA NO CACHE PARA GARANTIR O ENVIO DA DM
 async function enviarDM(titulo, message, cor, embedsExtras = []) {
     try {
         if (!OWNER_ID) return;
-        const owner = await client.users.fetch(OWNER_ID);
+        // Força o fetch completo da API do Discord caso o cache do client ainda não tenha carregado o usuário
+        const owner = await client.users.fetch(OWNER_ID, { force: true });
         const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
         await owner.send({ embeds: [embed, ...embedExtras] });
-    } catch (e) {}
+    } catch (e) {
+        terminalLog('error', `Falha crítica ao enviar DM de erro para o Owner: ${e.message}`);
+    }
 }
 
 async function getOrCreateLogsChannel(guild) {
@@ -119,7 +122,6 @@ async function getOrCreateLogsChannel(guild) {
     } catch (e) { return null; }
 }
 
-// CORRIGIDO: REMOVIDO ENVIO DE MENSAGENS COMUNS DE MODERAÇÃO PARA O SEU PRIVADO. MANTIDO APENAS NO SERVIDOR.
 async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuario = null) {
     try {
         const canalLogs = await getOrCreateLogsChannel(guild);
@@ -202,6 +204,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
+    // CONFIGURADO: NOTIFICAÇÃO DO BOT ATUALIZADO VAI DIRETO PARA A DM
     await enviarDM("🚀 Status do Sistema", `Nero atualizado com sucesso.`, '#00FF00');
 
     const commands = [
@@ -270,8 +273,8 @@ client.on('messageCreate', async (message) => {
 
         } catch (err) {
             terminalLog('error', `Erro na IA: ${err.message}`);
-            // APENAS ERROS OPERACIONAIS CRÍTICOS SÃO ENVIADOS AQUI
-            await enviarDM("❌ Falha Crítica no Gemini API", `Erro detectado: ${err.message}`, '#FF0000');
+            // ENVIANDO DETALHES CRÍTICOS DO ERRO PARA A DM DO OWNER (CONVERSÃO FORÇADA VIA API)
+            await enviarDM("❌ Falha Crítica no Gemini API", `**Mensagem do Erro:**\n\`\`\`text\n${err.message}\n\`\`\`\n**Localização:** Evento \`messageCreate\` (Resposta da Inteligência Artificial)`, '#FF0000');
             return message.reply("Deu um piripaque na minha IA. Já mandei os detalhes do erro pro meu dono no privado.");
         }
     }
@@ -378,7 +381,7 @@ client.on('interactionCreate', async interaction => {
         const tempo = options.getInteger('tempo');
         const target = await guild.members.fetch(membro.id);
         await target.timeout(tempo * 60 * 1000);
-        return interaction.reply(`🤫 Mutado por ${tempo} minutes.`);
+        return interaction.reply(`🤫 Mutado por ${tempo} minutos.`);
     }
 
     if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Restrito ao Dono.', ephemeral: true });
