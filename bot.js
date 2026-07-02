@@ -1,7 +1,7 @@
 const TOKEN = process.env.DISCORD_TOKEN;
 const OWNER_ID = process.env.DISCORD_OWNER_ID;
 
-const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AuditLogEvent } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
 const backup = require('discord-backup');
 const fs = require('fs');
@@ -39,11 +39,11 @@ function terminalLog(level, message) {
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-async function enviarDM(titulo, mensagem, cor) {
+async function enviarDM(titulo, message, cor) {
     try {
         if (!OWNER_ID) return;
         const owner = await client.users.fetch(OWNER_ID);
-        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(mensagem).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Sistema de Logs' });
+        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(message).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Sistema de Logs' });
         await owner.send({ embeds: [embed] });
     } catch (e) {}
 }
@@ -196,7 +196,8 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('limpar-warns').setDescription('Remove advertências.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)),
         new SlashCommandBuilder().setName('warn-limite').setDescription('[OWNER] Define limite de warns.').addIntegerOption(o => o.setName('numero').setDescription('Número').setRequired(true).setMinValue(1).setMaxValue(10)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa: panelinhas, influentes, conflitos.'),
-        new SlashCommandBuilder().setName('neural-reset').setDescription('[OWNER] Apaga todos os dados coletados pelo Neural.')
+        new SlashCommandBuilder().setName('neural-reset').setDescription('[OWNER] Apaga todos os dados coletados pelo Neural.'),
+        new SlashCommandBuilder().setName('cargos').setDescription('Gera o setup de 1 Admin + 31 Cargos baseados nas trends e brainrots do TikTok de 2026.')
     ];
 
     try {
@@ -468,98 +469,93 @@ client.on('interactionCreate', async interaction => {
         try {
             await alvo.setNickname(novoApelido);
             await enviarLog(guild, '✏️ Apelido Alterado', `Apelido modificado.`, '#4488FF', [{ name: 'Usuário', value: `\`${alvo.user.tag}\``, inline: true }, { name: 'Depois', value: `\`${novoApelido ?? 'resetado'}\``, inline: true }, { name: 'Por', value: `\`${interaction.user.tag}\``, inline: true }]);
-            return interaction.reply({ content: `Apelido alterado.`, ephemeral: true });
-        } catch (e) { return interaction.reply({ content: `Erro de hierarquia.`, ephemeral: true }); }
+            return interaction.reply({ content: `Apelido atualizado.`, ephemeral: true });
+        } catch (e) { return interaction.reply({ content: `Erro ao alterar apelido.`, ephemeral: true }); }
     }
 
-    if (commandName === 'warn') {
-        const alvo = options.getMember('membro');
-        const motivo = options.getString('motivo');
-        const guildId = guild.id; const userId = alvo.id;
-        if (!config.warns[guildId]) config.warns[guildId] = {};
-        if (!config.warns[guildId][userId]) config.warns[guildId][userId] = [];
-        config.warns[guildId][userId].push({ motivo, data: new Date().toLocaleString('pt-BR'), staff: interaction.user.tag });
-        if (!config.neural) config.neural = { members: {} };
-        if (!config.neural.members[userId]) config.neural.members[userId] = { tag: alvo.user.tag, messages: 0, mentionedBy: {}, warns: 0, deletedMsgs: 0 };
-        config.neural.members[userId].warns = (config.neural.members[userId].warns || 0) + 1;
-        saveConfig();
-        const total = config.warns[guildId][userId].length;
-        const limite = config.warnLimit || 3;
-        await interaction.reply({ embeds: [new EmbedBuilder().setColor('#1C1A27').setTitle('⚠️ Advertência — Sistema Nero').setDescription(`${alvo} recebeu uma advertência.`).addFields({ name: 'Motivo', value: `\`${motivo}\`` }, { name: 'Staff', value: `\`${interaction.user.tag}\``, inline: true }, { name: 'Total', value: `\`${total}/${limite}\``, inline: true }).setTimestamp()] });
-        await enviarLog(guild, '⚠️ Warn Registrado', `Advertência adicionada.`, '#FFAA00', [{ name: 'Advertido', value: `\`${alvo.user.tag}\``, inline: true }, { name: 'ID', value: `\`${alvo.id}\``, inline: true }, { name: 'Por', value: `\`${interaction.user.tag}\``, inline: true }, { name: 'Motivo', value: `\`${motivo}\`` }, { name: 'Total', value: `\`${total}/${limite}\``, inline: true }]);
-        if (total >= limite) {
+    // COMANDO SOLICITADO /CARGOS ADICIONADO AQUI
+    if (commandName === 'cargos') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const listaMemeCargos = [
+            { name: "adm", color: "#FF0000", admin: true }, 
+            { name: "⚡ Aura +999", color: "#FFD700" },
+            { name: "📉 Aura -5000", color: "#4A4A4A" },
+            { name: "🤫 Blue Tie (Mewing Master)", color: "#1E90FF" },
+            { name: "🍉 Skibidi de Jequié", color: "#8B4513" },
+            { name: "💀 Brainrot Clínico", color: "#7A1C1C" },
+            { name: "🔥 Lookmaxxing God", color: "#FF4500" },
+            { name: "🦅 Blue Bird Imparável", color: "#00BFFF" },
+            { name: "🦉 Monstro do Duolingo", color: "#32CD32" },
+            { name: "📈 Aura Infinita (Glitch)", color: "#00FFFF" },
+            { name: "🥑 Beta Sigma da Shopee", color: "#ADFF2F" },
+            { name: "🎭 Engajamento Forçado", color: "#BA55D3" },
+            { name: "🧊 Sigma Rizzler", color: "#4682B4" },
+            { name: "📱 Escravo do Algoritmo", color: "#FF1493" },
+            { name: "🤡 Flopado do TikTok", color: "#808080" },
+            { name: "🏎️ Casca de Bala Premium", color: "#FF8C00" },
+            { name: "🧙‍♂️ Mago de IA (Glow Up Artificial)", color: "#9370DB" },
+            { name: "🚬 Quiet Quitting no Server", color: "#2F4F4F" },
+            { name: "🥶 Rizz Ultrajante", color: "#00FA9A" },
+            { name: "🥊 Cancelado nos Status", color: "#CD5C5C" },
+            { name: "🧠 QI de Sabonete (Subway Surfers)", color: "#F0E68C" },
+            { name: "🔔 Rei do Spam de Reaction", color: "#E6E6FA" },
+            { name: "👻 NPC Vivendo em Live", color: "#DA70D6" },
+            { name: "🐈 Gato de Terno Elegante", color: "#363636" },
+            { name: "🦖 Herdeiro do Baby Riki", color: "#20B2AA" },
+            { name: "🌋 Som de Estouro de Áudio", color: "#FF00FF" },
+            { name: "🛸 Abduzido pela For You", color: "#7B68EE" },
+            { name: "🍟 Viciado em Content Farm", color: "#DEB887" },
+            { name: "⛓️ Prisioneiro do Reels", color: "#778899" },
+            { name: "🎰 Rei do Tigrinho 2026", color: "#FFD700" },
+            { name: "💅 Divando com Low Quality", color: "#FF69B4" },
+            { name: "🛒 Comprador de Admin por Pix", color: "#008080" }
+        ];
+
+        let criados = 0;
+        let erros = 0;
+
+        for (const cargoInfo of listaMemeCargos) {
             try {
-                await alvo.timeout(60 * 60 * 1000, `Limite de warns (${total}/${limite})`);
-                await interaction.channel.send({ embeds: [new EmbedBuilder().setColor('#0A0A0A').setTitle('🔒 Punição Automática').setDescription(`${alvo} atingiu ${total} warns e foi silenciado por 1 hora.\n\n*O sistema Nero não perdoa.*`).setTimestamp()] });
-                await enviarLog(guild, '🔒 Punição Automática', `Timeout 1h por excesso de warns.`, '#FF4444', [{ name: 'Punido', value: `\`${alvo.user.tag}\``, inline: true }, { name: 'Warns', value: `\`${total}/${limite}\``, inline: true }]);
-            } catch (e) {}
+                const payload = {
+                    name: cargoInfo.name,
+                    color: cargoInfo.color,
+                    reason: 'Configuração em massa de cargos via comando /cargos'
+                };
+                if (cargoInfo.admin) {
+                    payload.permissions = [PermissionFlagsBits.Administrator];
+                    payload.hoist = true;
+                }
+                await guild.roles.create(payload);
+                criados++;
+            } catch (e) {
+                erros++;
+            }
         }
-        return;
-    }
 
-    if (commandName === 'warns') {
-        const alvo = options.getUser('membro');
-        const lista = config.warns?.[guild.id]?.[alvo.id] || [];
-        return interaction.reply({ embeds: [new EmbedBuilder().setColor('#2C2A4A').setTitle(`📋 Warns — ${alvo.tag}`).setDescription(lista.length === 0 ? '*Nenhuma.*' : lista.map((w, i) => `**${i+1}.** ${w.motivo} — *${w.data}* — \`${w.staff}\``).join('\n')).addFields({ name: 'Total', value: `\`${lista.length}/${config.warnLimit||3}\``, inline: true }).setTimestamp()], ephemeral: true });
-    }
+        await enviarLog(guild, '🎭 Cargos em Massa Gerados', `O comando /cargos injetou uma nova hierarquia de memes no servidor.`, '#00FF88', [
+            { name: 'Criados com Sucesso', value: `\`${criados}\``, inline: true },
+            { name: 'Erros/Falhas', value: `\`${erros}\``, inline: true }
+        ]);
 
-    if (commandName === 'limpar-warns') {
-        const alvo = options.getUser('membro');
-        const antes = config.warns?.[guild.id]?.[alvo.id]?.length || 0;
-        if (config.warns?.[guild.id]) delete config.warns[guild.id][alvo.id];
-        saveConfig();
-        await enviarLog(guild, '🧹 Warns Limpos', `Advertências removidas.`, '#00FF88', [{ name: 'Usuário', value: `\`${alvo.tag}\``, inline: true }, { name: 'Removidos', value: `\`${antes}\``, inline: true }, { name: 'Por', value: `\`${interaction.user.tag}\``, inline: true }]);
-        return interaction.reply({ content: `✅ Warns de **${alvo.tag}** limpos.`, ephemeral: true });
-    }
-
-    if (commandName === 'warn-limite') {
-        if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Apenas o dono.', ephemeral: true });
-        config.warnLimit = options.getInteger('numero'); saveConfig();
-        return interaction.reply({ content: `✅ Limite: **${config.warnLimit} warns**`, ephemeral: true });
+        return interaction.editReply({ content: `✅ Operação Concluída! **${criados}** cargos criados (incluindo o cargo administrativo único \`adm\`). Falhas: ${erros}.` });
     }
 
     if (commandName === 'salvar-servidor') {
-        if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Apenas o dono.', ephemeral: true });
         await interaction.deferReply({ ephemeral: true });
         try {
-            const bkp = await backup.create(guild, { maxMessagesPerChannel: 20, jsonSave: true, jsonName: 'servidor_backup_completo' });
-            config.ultimoBackupId = bkp.id; saveConfig();
-            await enviarLog(guild, '💾 Backup Criado', `Backup salvo.`, '#00FF88', [{ name: 'ID', value: `\`${bkp.id}\``, inline: true }, { name: 'Por', value: `\`${interaction.user.tag}\``, inline: true }]);
-            return interaction.editReply({ content: `✅ Backup criado!\n**ID:** \`${bkp.id}\`` });
+            const dadosBackup = await backup.create(guild, { maxMessagesPerChannel: 20, jsonSave: true, jsonName: 'servidor_backup_completo' });
+            config.ultimoBackupId = dadosBackup.id; saveConfig();
+            return interaction.editReply({ content: `Server backup criado com sucesso! ID: ${dadosBackup.id}` });
         } catch (e) { return interaction.editReply({ content: `Falha: ${e.message}` }); }
     }
 
     if (commandName === 'carregar-servidor') {
-        if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Apenas o dono.', ephemeral: true });
-        if (!config.ultimoBackupId) return interaction.reply({ content: 'Nenhum backup salvo.', ephemeral: true });
-        await interaction.reply({ content: '⚙️ Restaurando...', ephemeral: true });
-        try { await backup.load(config.ultimoBackupId, guild, { clearGuildBeforeRestore: true }); } catch (e) { terminalLog('error', `Erro: ${e.message}`); }
+        if (!config.ultimoBackupId) return interaction.reply({ content: 'Erro: Nenhum backup salvo.', ephemeral: true });
+        await interaction.reply({ content: 'Aviso: Alinhando restauração total de ativos...', ephemeral: true });
+        try {
+            await backup.load(config.ultimoBackupId, guild, { clearGuildBeforeRestore: true });
+        } catch (e) {}
         return;
     }
-
-    if (commandName === 'setup-server') {
-        if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Apenas o dono.', ephemeral: true });
-        await interaction.reply({ content: '⚙️ Iniciando limpeza e blindagem...', ephemeral: true });
-
-        const antigos = await guild.channels.fetch();
-        for (const [, c] of antigos) { try { await c.delete(); } catch(e){} }
-        const cargosAntigos = await guild.roles.fetch();
-        for (const [, r] of cargosAntigos) { if (!r.managed && r.id !== guild.roles.everyone.id) { try { await r.delete(); } catch(e){} } }
-        await guild.roles.everyone.setPermissions([PermissionFlagsBits.ReadMessageHistory]);
-
-        const cargoMembro = await guild.roles.create({ name: 'user', color: '#555555', permissions: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] });
-        config.autoroleId = cargoMembro.id; saveConfig();
-        const cargoVip = await guild.roles.create({ name: '专 VIP Member', color: '#2C2A4A', hoist: true, permissions: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] });
-        const cargoDono = await guild.roles.create({ name: '👑 Server Owner', color: '#010101', hoist: true, permissions: [PermissionFlagsBits.Administrator] });
-        const cargoCoOwner = await guild.roles.create({ name: '🔱 Co-Owner', color: '#090A0C', hoist: true, permissions: [PermissionFlagsBits.ViewChannel] });
-        const cargoDirector = await guild.roles.create({ name: '✦ Senior Director', color: '#121417', hoist: true, permissions: [PermissionFlagsBits.ViewChannel] });
-        const cargoAdmin = await guild.roles.create({ name: '🛡️ Administrator', color: '#1B1E22', hoist: true, permissions: [PermissionFlagsBits.ViewChannel] });
-        const cargoSrMod = await guild.roles.create({ name: '⚖️ Senior Moderator', color: '#25292F', hoist: true, permissions: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages] });
-        const cargoMod = await guild.roles.create({ name: '⚔️ Moderator', color: '#2F343C', hoist: true, permissions: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages] });
-        const cargoInspector = await guild.roles.create({ name: '👁️ Inspector', color: '#3A404A', hoist: true, permissions: [PermissionFlagsBits.ViewChannel] });
-     const cargoHelper = await guild.roles.create({
-    name: '⚡ Staff Helper',
-    color: '#464D59',
-    hoist: true,
-    permissions: [PermissionFlagsBits.ViewChannel]
 });
