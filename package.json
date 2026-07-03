@@ -10,6 +10,7 @@
     "@discordjs/voice": "^0.17.0",
     "libsodium-wrappers": "^0.7.13",
     "discord-backup": "^3.4.0",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "groq-sdk": "^0.12.0"
   }
 }
