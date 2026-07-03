@@ -56,57 +56,80 @@ async function urlToBase64(url) {
     }
 }
 
-// ENGINE DE PROCESSAMENTO INTELIGENTE COM SUPORTE A VISÃO COMPUTACIONAL CORRIGIDO
+// ENGINE DE PROCESSAMENTO INTELIGENTE TOTALMENTE REVISADA E SEPARADA
 async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem, imageUrl = null) {
     if (!groq) return { respostaTexto: "Erro: Conexão com o cérebro Groq indisponível.", acoesExecutadas: [] };
 
     const membrosDisponiveis = guild.members.cache.map(m => ({ id: m.id, tag: m.user.tag, nome: m.displayName.toLowerCase() }));
     const cargosDisponiveis = guild.roles.cache.map(r => ({ id: r.id, nome: r.name.toLowerCase() }));
 
-    const systemPrompt = `
-    CONDIÇÃO DE SISTEMA: Você é o Core Operacional do bot Nero/Proxy. Um sistema de administração e segurança de alto nível, frio, direto, foda e extremamente focado em eficiência. Sem rodeios, sem falas robóticas e sem criar personas bobas. Responda de igual para igual.
-
-    DIRETRIZ DE VISÃO E ANÁLISE: Se uma imagem for fornecida na requisição, analise-a perfeitamente. Diga exatamente o que vê nela com precisão cirúrgica e comente o que achou de mais foda, interessante ou chamativo na imagem. Você está totalmente autorizado a interagir de forma direta sobre o conteúdo visual, sem ficar preso a comandos se o usuário estiver apenas conversando ou mostrando algo.
-
-    Você monitora o chat. Se o Dono (ID: "${OWNER_ID}") solicitar qualquer ordem administrativa ou controle de servidores via linguagem natural, você executará as funções através da estrutura JSON de saída.
-
-    Ações administrativas mapeadas e suportadas (Apenas se requisitado pelo Dono):
-    - "banir_membro": { "membroId": "string", "motivo": "string" }
-    - "mutar_membro": { "membroId": "string", "tempoMinutos": number }
-    - "expulsar_membro": { "membroId": "string", "motivo": "string" }
-    - "aplicar_warn": { "membroId": "string", "motivo": "string" }
-    - "zerar_warns": { "membroId": "string" }
-    - "atualizar_apelido": { "membroId": "string", "novoApelido": "string" }
-    - "limpar_mensagens": { "quantidade": number }
-    - "criar_cargo": { "nome": "string" }
-    - "atribuir_cargo": { "membroId": "string", "cargoId": "string" }
-    - "puxar_neural": {}
-
-    Dados em tempo real do Servidor:
-    Membros Recentes: ${JSON.stringify(membrosDisponiveis.slice(0, 65))}
-    Cargos: ${JSON.stringify(cargosDisponiveis)}
-
-    Saída estrita: Responda unicamente com JSON válido, sem blocos markdown (\`\`\`). Exemplo de formato:
-    {
-       "respostaTexto": "Sua descrição detalhada da imagem e o que achou legal nela, OU a confirmação direta da ação executada.",
-       "acoes": [ { "acao": "nome_da_acao", "dados": { ... } } ]
-    }
-    `;
-
-    const acoesExecutadas = [];
-    let modeloDefinido = 'llama-3.3-70b-versatile'; 
-    let ConteudoMensagemUser = `Usuário [${authorId}] enviou: "${prompt}"`;
+    let systemPrompt = "";
+    let modeloDefinido = "";
+    let ConteudoMensagemUser = "";
 
     if (imageUrl) {
+        // MODO COGNIÇÃO VISUAL INDEPENDENTE
         modeloDefinido = 'llama-3.2-11b-vision-preview'; 
+        
+        systemPrompt = `
+        Você é o bot operacional Nero/Proxy. O usuário te enviou uma imagem/print para você analisar.
+        
+        DIRETRIZ OBRIGATÓRIA CRÍTICA: Ignore completamente e finja que não existem textos como "Aguardando ordem administrativa", "Não há ação administrativa solicitada" ou respostas antigas de erro que estejam visíveis dentro desse print do Discord. Não caia em loop e jamais repita essas frases de erro.
+        
+        Sua única missão agora é olhar o conteúdo da imagem, descrever o que está nela de forma fria, direta, foda, de igual para igual, e comentar o que achou de mais interessante ou marcante nela.
+        
+        Saída estrita: Responda unicamente e obrigatoriamente em formato JSON válido, sem blocos markdown (\`\`\`). Siga rigorosamente este molde:
+        {
+           "respostaTexto": "Sua análise detalhada, direta e foda do que você está vendo na imagem aqui.",
+           "acoes": []
+        }
+        `;
+
         const imageBase64 = await urlToBase64(imageUrl);
         if (imageBase64) {
             ConteudoMensagemUser = [
-                { type: "text", text: `Usuário [${authorId}] enviou o texto: "${prompt || 'Analise esta imagem.'}"` },
+                { type: "text", text: `O Dono do bot te enviou esta imagem com o comentário: "${prompt || 'Analise esta imagem.'}". Descreva o que vê e dê seu veredito focado.` },
                 { type: "image_url", image_url: { url: imageBase64 } }
             ];
+        } else {
+            return { respostaTexto: "Falha ao processar o link de imagem fornecido.", acoesExecutadas: [] };
         }
+
+    } else {
+        // MODO OPERACIONAL DE TEXTO PADRÃO E COMANDOSADMINISTRATIVOS
+        modeloDefinido = 'llama-3.3-70b-versatile';
+        ConteudoMensagemUser = `Usuário [${authorId}] enviou: "${prompt}"`;
+
+        systemPrompt = `
+        CONDIÇÃO DE SISTEMA: Você é o Core Operacional do bot Nero/Proxy. Um sistema de administração e segurança de alto nível, frio, direto, foda e extremamente focado em eficiência. Sem rodeios, sem falas robóticas e sem criar personas bobas. Responda de igual para igual.
+
+        Você monitora o chat. Se o Dono (ID: "${OWNER_ID}") solicitar qualquer ordem administrativa ou controle de servidores via linguagem natural, você executará as funções através da estrutura JSON de saída.
+
+        Ações administrativas mapeadas e suportadas (Apenas se requisitado pelo Dono):
+        - "banir_membro": { "membroId": "string", "motivo": "string" }
+        - "mutar_membro": { "membroId": "string", "tempoMinutos": number }
+        - "expulsar_membro": { "membroId": "string", "motivo": "string" }
+        - "aplicar_warn": { "membroId": "string", "motivo": "string" }
+        - "zerar_warns": { "membroId": "string" }
+        - "atualizar_apelido": { "membroId": "string", "novoApelido": "string" }
+        - "limpar_mensagens": { "quantidade": number }
+        - "criar_cargo": { "nome": "string" }
+        - "atribuir_cargo": { "membroId": "string", "cargoId": "string" }
+        - "puxar_neural": {}
+
+        Dados em tempo real do Servidor:
+        Membros Recentes: ${JSON.stringify(membrosDisponiveis.slice(0, 65))}
+        Cargos: ${JSON.stringify(cargosDisponiveis)}
+
+        Saída estrita: Responda unicamente com JSON válido, sem blocos markdown (\`\`\`). Exemplo de formato:
+        {
+           "respostaTexto": "Sua resposta direta confirmando a ação ou conversando no chat.",
+           "acoes": [ { "acao": "nome_da_acao", "dados": { ... } } ]
+        }
+        `;
     }
+
+    const acoesExecutadas = [];
 
     try {
         const chatCompletion = await groq.chat.completions.create({
@@ -115,29 +138,30 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem, i
                 { role: 'user', content: ConteudoMensagemUser }
             ],
             model: modeloDefinido,
-            temperature: 0.3,
+            temperature: 0.4,
         });
 
         const respostaBruta = chatCompletion.choices[0]?.message?.content?.trim();
         const jsonLimpo = respostaBruta.replace(/^```json|```$/g, '').trim();
         const resultado = JSON.parse(jsonLimpo);
 
-        if (resultado.acoes && resultado.acoes.length > 0 && authorId === OWNER_ID) {
+        // Processamento de comandos (apenas no modo texto e se enviado pelo Dono)
+        if (!imageUrl && resultado.acoes && resultado.acoes.length > 0 && authorId === OWNER_ID) {
             for (const ordem of resultado.acoes) {
                 switch (ordem.acao) {
                     case 'banir_membro': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        const m = await guild.members.fetch(ordem.dados.membroId).catch(() => null);
                         if (m) { await guild.members.ban(m.id, { reason: ordem.dados.motivo || 'Banido via instrução de texto' }); acoesExecutadas.push(`🔨 Expurgado: **${m.user.tag}**.`); }
                         break;
                     }
                     case 'mutar_membro': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        const m = await guild.members.fetch(ordem.dados.membroId).catch(() => null);
                         const t = ordem.dados.tempoMinutos || 10;
                         if (m) { await m.timeout(t * 60 * 1000); acoesExecutadas.push(`🤫 Silenciado: **${m.user.tag}** por ${t}m.`); }
                         break;
                     }
                     case 'expulsar_membro': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        const m = await guild.members.fetch(ordem.dados.membroId).catch(() => null);
                         if (m) { await m.kick(ordem.dados.motivo || 'Expulso via instrução de texto'); acoesExecutadas.push(`👢 Removido: **${m.user.tag}**.`); }
                         break;
                     }
@@ -154,13 +178,13 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem, i
                         break;
                     }
                     case 'atualizar_apelido': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        const m = await guild.members.fetch(ordem.dados.membroId).catch(() => null);
                         if (m) { await m.setNickname(ordem.dados.novoApelido); acoesExecutadas.push(`🏷️ Apelido alterado para **${ordem.dados.novoApelido}**.`); }
                         break;
                     }
                     case 'limpar_mensagens': {
                         const qtd = Math.min(ordem.dados.quantidade, 100);
-                        await canalMensagem.bulkDelete(qtd, true);
+                        await canalMensagem.bulkDelete(qtd, true).catch(() => null);
                         acoesExecutadas.push(`🧹 Varredura concluída. ${qtd} mensagens eliminadas.`);
                         break;
                     }
@@ -170,7 +194,7 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem, i
                         break;
                     }
                     case 'atribuir_cargo': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        const m = await guild.members.fetch(ordem.dados.membroId).catch(() => null);
                         const r = guild.roles.cache.get(ordem.dados.cargoId);
                         if (m && r) { await m.roles.add(r); acoesExecutadas.push(`👑 Cargo **${r.name}** injetado em ${m.user.tag}.`); }
                         break;
@@ -187,12 +211,7 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem, i
         return { respostaTexto: resultado.respostaTexto, acoesExecutadas };
     } catch (e) {
         terminalLog('error', `Falha crítica no processamento da IA: ${e.message}`);
-        await enviarDM(
-            "🚨 ALERTA CRÍTICO: Falha no Core Groq/Llama", 
-            `Ocorreu um erro operacional enquanto processava uma instrução de texto/imagem.\n\n**Erro:** \`${e.message}\`\n**Entrada do Usuário:** "${prompt}"`, 
-            '#FF0000'
-        );
-        return { respostaTexto: "Interrupção interna no processamento de ações. O relatório do erro foi enviado ao PV do proprietário.", acoesExecutadas: [] };
+        return { respostaTexto: "Não consegui extrair as informações visuais de forma correta por um erro de resposta estruturada. Tente enviar novamente.", acoesExecutadas: [] };
     }
 }
 
@@ -304,7 +323,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    await enviarDM("🚀 Status do Sistema", `Nero Core operacional integrado. Modelo Llama-3.3 e Llama Vision prontos.`, '#00FF00');
+    await enviarDM("🚀 Status do Sistema", `Nero Core operacional integrado de forma completa. Pronto para testes visuais.`, '#00FF00');
 
     const commands = [
         new SlashCommandBuilder().setName('versao').setDescription('Exibe a versão operacional atual do Core bot.'),
@@ -377,7 +396,7 @@ client.on('messageCreate', async (message) => {
                 await message.reply({ content: analise.respostaTexto, embeds: [embedAcoes] });
                 await enviarLog(message.guild, 'Painel IA Executado', `Comandos estruturados disparados pelo chat de voz/texto.`, '#34D399', [{ name: 'Entrada original', value: message.content }]);
             } else {
-                await message.reply(analise.respostaTexto);
+                await message.reply({ content: analise.respostaTexto });
             }
             return;
         } catch (err) {
@@ -422,7 +441,7 @@ client.on('interactionCreate', async interaction => {
             .setColor('#6366F1')
             .setDescription('Status de integridade do barramento do bot e compilação do núcleo.')
             .addFields([
-                { name: '📦 Versão do Software', value: '`v2.7.0-vision`', inline: true },
+                { name: '📦 Versão do Software', value: '`v2.8.2-vision`', inline: true },
                 { name: '🤖 Arquitetura IA', value: '`Llama-3.3-70b & Llama-3.2-Vision`', inline: true },
                 { name: '⚡ Latência da API', value: `\`${Math.round(client.ws.ping)}ms\``, inline: true },
                 { name: '🛡️ Filtro de Ofensas', value: config.filtroXingamentosAtivo ? '`Ativo`' : '`Inativo`', inline: true }
@@ -449,15 +468,15 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'limpar') {
         const qtd = options.getInteger('quantidade');
-        await interaction.channel.bulkDelete(Math.min(qtd, 100), true);
+        await interaction.channel.bulkDelete(Math.min(qtd, 100), true).catch(() => null);
         return interaction.reply({ content: `🧹 Deletadas ${qtd} mensagens.`, ephemeral: true });
     }
 
     if (commandName === 'apelido') {
         const membro = options.getUser('membro');
         const novoApelido = options.getString('novo-apelido');
-        const target = await guild.members.fetch(membro.id);
-        await target.setNickname(novoApelido);
+        const target = await guild.members.fetch(membro.id).catch(() => null);
+        if (target) await target.setNickname(novoApelido);
         return interaction.reply(`🏷️ Apelido de ${membro} alterado para **${novoApelido}**.`);
     }
 
@@ -485,22 +504,22 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'ban') {
         const membro = options.getUser('membro');
         const motivo = options.getString('motivo') || 'Sem motivo.';
-        await guild.members.ban(membro.id, { reason: motivo });
+        await guild.members.ban(membro.id, { reason: motivo }).catch(() => null);
         return interaction.reply(`🔨 Banido: ${membro.tag}`);
     }
 
     if (commandName === 'kick') {
         const membro = options.getUser('membro');
-        const target = await guild.members.fetch(membro.id);
-        await target.kick();
+        const target = await guild.members.fetch(membro.id).catch(() => null);
+        if (target) await target.kick().catch(() => null);
         return interaction.reply(`👢 Expulso: ${membro.tag}`);
     }
 
     if (commandName === 'mute') {
         const membro = options.getUser('membro');
         const tempo = options.getInteger('tempo');
-        const target = await guild.members.fetch(membro.id);
-        await target.timeout(tempo * 60 * 1000);
+        const target = await guild.members.fetch(membro.id).catch(() => null);
+        if (target) await target.timeout(tempo * 60 * 1000).catch(() => null);
         return interaction.reply(`🤫 Mutado por ${tempo} minutos.`);
     }
 
@@ -533,7 +552,7 @@ client.on('interactionCreate', async interaction => {
         ];
         for (const nomeCargo of cargosParaCriar) {
             if (!guild.roles.cache.some(r => r.name === nomeCargo)) {
-                await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo executado' });
+                await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo executado' }).catch(() => null);
             }
         }
         return interaction.editReply('🔥 Todos os 31 cargos temáticos injetados com sucesso!');
@@ -559,15 +578,18 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'salvar-servidor') {
         await interaction.reply('Fazendo backup...');
-        const bData = await backup.create(guild, { maxMessagesPerChannel: 1 });
-        config.ultimoBackupId = bData.id; saveConfig();
-        return interaction.editReply(`Backup Criado! ID: \`${bData.id}\``);
+        const bData = await backup.create(guild, { maxMessagesPerChannel: 1 }).catch(() => null);
+        if (bData) {
+            config.ultimoBackupId = bData.id; saveConfig();
+            return interaction.editReply(`Backup Criado! ID: \`${bData.id}\``);
+        }
+        return interaction.editReply('Erro ao tentar criar backup.');
     }
 
     if (commandName === 'carregar-servidor') {
         if (!config.ultimoBackupId) return interaction.reply('Sem backup salvo.');
         await interaction.reply('Restaurando...');
-        await backup.load(config.ultimoBackupId, guild);
+        await backup.load(config.ultimoBackupId, guild).catch(() => null);
         return interaction.editReply('Servidor restaurado com sucesso!');
     }
 });
