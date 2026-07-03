@@ -36,40 +36,44 @@ function terminalLog(level, message) {
 let groq = null;
 if (GROQ_API_KEY) {
     groq = new Groq({ apiKey: GROQ_API_KEY });
-    terminalLog('success', 'Módulo Llama 3.3 (Groq) injetado com sucesso no Core.');
+    terminalLog('success', 'Módulo Llama 3.3 (Core Control) injetado com sucesso.');
 } else {
-    terminalLog('warn', 'GROQ_API_KEY não configurada no painel do Render.');
+    terminalLog('warn', 'GROQ_API_KEY ausente.');
 }
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// ENGINE DE PROCESSAMENTO NEURAL LLAMA 3.3 (CONVERSA + COMANDOS AUTOMÁTICOS POR TEXTO DIRETO)
+// ENGINE DE PROCESSAMENTO INTELIGENTE (SEM SCRIPT DE PERSONALIDADE INÚTIL - MÁXIMO CONTROLE)
 async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
-    if (!groq) return { respostaTexto: "Deu um piripaque na minha IA. A chave GROQ_API_KEY não foi configurada no Render.", acoesExecutadas: [] };
+    if (!groq) return { respostaTexto: "Erro: Conexão com o cérebro Groq indisponível.", acoesExecutadas: [] };
 
     const membrosDisponiveis = guild.members.cache.map(m => ({ id: m.id, tag: m.user.tag, nome: m.displayName.toLowerCase() }));
     const cargosDisponiveis = guild.roles.cache.map(r => ({ id: r.id, nome: r.name.toLowerCase() }));
 
     const systemPrompt = `
-    CONDIÇÃO DE SISTEMA: Você é o Nero/NaniBot, um assistente virtual gótico altamente inteligente, autêntico, adaptável e com um toque de sagacidade. Fale de igual para igual, de forma direta, clara, foda e use gírias naturais.
-    Você recebe mensagens do chat comum. Se for uma conversa comum, responda de forma autêntica e sarcástica.
-    
-    Se o autor da mensagem for o Dono do bot (ID igual a "${OWNER_ID}") e ele solicitar uma punição ou comando administrativo por texto (ex: banir, mutar, dar cargo, limpar chat), você deve identificar as intenções e estruturar as ações. Se não for o dono pedindo punição, recuse com deboche.
+    CONDIÇÃO DE SISTEMA: Você é o Core Operacional do bot Nero/Proxy. Um sistema de administração e segurança de alto nível, frio, direto, foda e extremamente focado em eficiência. Sem rodeios, sem falas robóticas e sem criar personas bobas. Responda de igual para igual.
 
-    Ações suportadas (Apenas para o Dono):
-    - "criar_cargo": { "nome": "string" }
-    - "atribuir_cargo": { "membroId": "string", "cargoId": "string" }
-    - "limpar_mensagens": { "quantidade": number }
+    Você monitora o chat. Se o Dono (ID: "${OWNER_ID}") solicitar qualquer ordem administrativa ou controle de servidores via linguagem natural, você tem a capacidade técnica de executar as seguintes funções através da estrutura JSON de saída.
+
+    Ações administrativas mapeadas e suportadas (Apenas se requisitado pelo Dono):
     - "banir_membro": { "membroId": "string", "motivo": "string" }
     - "mutar_membro": { "membroId": "string", "tempoMinutos": number }
+    - "expulsar_membro": { "membroId": "string", "motivo": "string" }
+    - "aplicar_warn": { "membroId": "string", "motivo": "string" }
+    - "zerar_warns": { "membroId": "string" }
+    - "atualizar_apelido": { "membroId": "string", "novoApelido": "string" }
+    - "limpar_mensagens": { "quantidade": number }
+    - "criar_cargo": { "nome": "string" }
+    - "atribuir_cargo": { "membroId": "string", "cargoId": "string" }
+    - "puxar_neural": {}
 
-    Dados do servidor para cruzamento:
-    Membros: ${JSON.stringify(membrosDisponiveis.slice(0, 70))}
+    Dados em tempo real do Servidor:
+    Membros Recentes: ${JSON.stringify(membrosDisponiveis.slice(0, 65))}
     Cargos: ${JSON.stringify(cargosDisponiveis)}
 
-    Saída obrigatória: Responda APENAS em formato JSON bruto, sem blocos de código markdown. Formato:
+    Saída estrita: Responda unicamente com JSON válido, sem blocos markdown (\`\`\`). Exemplo de formato:
     {
-       "respostaTexto": "Sua resposta falada para o chat aqui",
+       "respostaTexto": "Sua resposta curta e direta confirmando a ação no chat.",
        "acoes": [ { "acao": "nome_da_acao", "dados": { ... } } ]
     }
     `;
@@ -82,8 +86,8 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: `Usuário [${authorId}] enviou: "${prompt}"` }
             ],
-            model: 'llama-3.3-70b-versatile', // Corrigido para o modelo atualizado de 2026
-            temperature: 0.5,
+            model: 'llama-3.3-70b-versatile',
+            temperature: 0.3,
         });
 
         const respostaBruta = chatCompletion.choices[0]?.message?.content?.trim();
@@ -93,35 +97,59 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
         if (resultado.acoes && resultado.acoes.length > 0 && authorId === OWNER_ID) {
             for (const ordem of resultado.acoes) {
                 switch (ordem.acao) {
-                    case 'criar_cargo': {
-                        const r = await guild.roles.create({ name: ordem.dados.nome, reason: 'Terminal de Chat Llama' });
-                        acoesExecutadas.push(`🔹 Cargo **${r.name}** gerado via texto.`);
+                    case 'banir_membro': {
+                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        if (m) { await guild.members.ban(m.id, { reason: ordem.dados.motivo || 'Banido via instrução de texto' }); acoesExecutadas.push(`🔨 Expurgado: **${m.user.tag}**.`); }
                         break;
                     }
-                    case 'atribuir_cargo': {
+                    case 'mutar_membro': {
                         const m = await guild.members.fetch(ordem.dados.membroId);
-                        const r = guild.roles.cache.get(ordem.dados.cargoId);
-                        if (m && r) { await m.roles.add(r); acoesExecutadas.push(`👑 Cargo ${r.name} entregue a ${m}.`); }
+                        const t = ordem.dados.tempoMinutos || 10;
+                        if (m) { await m.timeout(t * 60 * 1000); acoesExecutadas.push(`🤫 Silenciado: **${m.user.tag}** por ${t}m.`); }
+                        break;
+                    }
+                    case 'expulsar_membro': {
+                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        if (m) { await m.kick(ordem.dados.motivo || 'Expulso via instrução de texto'); acoesExecutadas.push(`👢 Removido: **${m.user.tag}**.`); }
+                        break;
+                    }
+                    case 'aplicar_warn': {
+                        const mid = ordem.dados.membroId;
+                        if (!config.warns[mid]) config.warns[mid] = [];
+                        config.warns[mid].push({ motivo: ordem.dados.motivo || 'Warn direto', data: new Date().toLocaleDateString() }); saveConfig();
+                        acoesExecutadas.push(`⚠️ Warn registrado para o ID \`${mid}\`.`);
+                        break;
+                    }
+                    case 'zerar_warns': {
+                        config.warns[ordem.dados.membroId] = []; saveConfig();
+                        acoesExecutadas.push(`✅ Advertências redefinidas para zero.`);
+                        break;
+                    }
+                    case 'atualizar_apelido': {
+                        const m = await guild.members.fetch(ordem.dados.membroId);
+                        if (m) { await m.setNickname(ordem.dados.novoApelido); acoesExecutadas.push(`🏷️ Apelido alterado para **${ordem.dados.novoApelido}**.`); }
                         break;
                     }
                     case 'limpar_mensagens': {
                         const qtd = Math.min(ordem.dados.quantidade, 100);
                         await canalMensagem.bulkDelete(qtd, true);
-                        acoesExecutadas.push(`🧹 Expurgadas ${qtd} mensagens via IA.`);
+                        acoesExecutadas.push(`🧹 Varredura concluída. ${qtd} mensagens eliminadas.`);
                         break;
                     }
-                    case 'banir_membro': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
-                        if (m) {
-                            await guild.members.ban(m.id, { reason: ordem.dados.motivo || 'Banido via chat IA pelo Dono' });
-                            acoesExecutadas.push(`🔨 **${m.user.tag}** foi expurgado do servidor.`);
-                        }
+                    case 'criar_cargo': {
+                        const r = await guild.roles.create({ name: ordem.dados.nome, reason: 'Core AI Execution' });
+                        acoesExecutadas.push(`🔹 Cargo criado: **${r.name}**.`);
                         break;
                     }
-                    case 'mutar_membro': {
+                    case 'atribuir_cargo': {
                         const m = await guild.members.fetch(ordem.dados.membroId);
-                        const tempo = ordem.dados.tempoMinutos || 10;
-                        if (m) { await m.timeout(tempo * 60 * 1000); acoesExecutadas.push(`🤫 **${m.user.tag}** isolado por ${tempo} minutos.`); }
+                        const r = guild.roles.cache.get(ordem.dados.cargoId);
+                        if (m && r) { await m.roles.add(r); acoesExecutadas.push(`👑 Cargo **${r.name}** injetado em ${m.user.tag}.`); }
+                        break;
+                    }
+                    case 'puxar_neural': {
+                        const r = gerarRelatorioNeural(guild);
+                        if (r) acoesExecutadas.push(`📊 **Atividade:** ${r.total} monitorados.\n**Mais ativos:** ${r.topAtivos.map(x => x[1].tag).join(', ')}`);
                         break;
                     }
                 }
@@ -130,7 +158,14 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
 
         return { respostaTexto: resultado.respostaTexto, acoesExecutadas };
     } catch (e) {
-        return { respostaTexto: "Tive um soluço nas minhas conexões neurais aqui.", acoesExecutadas: [] };
+        // REPORT DE ERRO CRÍTICO DA IA DIRETO NO SEU PRIVADO
+        terminalLog('error', `Falha crítica no processamento da IA: ${e.message}`);
+        await enviarDM(
+            "🚨 ALERTA CRÍTICO: Falha no Core Groq/Llama", 
+            `Ocorreu um erro operacional enquanto processava uma instrução de texto.\n\n**Erro:** \`${e.message}\`\n**Entrada do Usuário:** "${prompt}"`, 
+            '#FF0000'
+        );
+        return { respostaTexto: "Interrupção interna no processamento de ações. O relatório do erro foi enviado ao PV do proprietário.", acoesExecutadas: [] };
     }
 }
 
@@ -140,7 +175,9 @@ async function enviarDM(titulo, message, cor, embedsExtras = []) {
         const owner = await client.users.fetch(OWNER_ID);
         const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
         await owner.send({ embeds: [embed, ...embedExtras] });
-    } catch (e) {}
+    } catch (e) {
+        terminalLog('error', `Não consegui enviar mensagem no PV do Owner: ${e.message}`);
+    }
 }
 
 async function getOrCreateLogsChannel(guild) {
@@ -153,7 +190,7 @@ async function getOrCreateLogsChannel(guild) {
         const ch = await guild.channels.create({
             name: './/nero-logs',
             type: ChannelType.GuildText,
-            topic: 'Sistema de logs privado — NaniBot Nero v2.5.0',
+            topic: 'Sistema de logs privado — Nero CyberSec',
             permissionOverwrites: [
                 { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
@@ -172,25 +209,19 @@ async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuar
         const corFinal = cor || '#0B0A14';
         
         const embedServidor = new EmbedBuilder()
-            .setAuthor({ name: 'Nero Moderation Security', iconURL: client.user.displayAvatarURL({ dynamic: true }) })
-            .setTitle(`🛡️ Sistema de Monitoramento — ${titulo}`)
-            .setDescription(`${descricao}\n\n**Ocorrência registrada às:** <t:${Math.floor(Date.now() / 1000)}:F> (<t:${Math.floor(Date.now() / 1000)}:R>)`)
+            .setAuthor({ name: 'Nero Security Core', iconURL: client.user.displayAvatarURL() })
+            .setTitle(`🛡️ Log — ${titulo}`)
+            .setDescription(`${descricao}\n\n**Data:** <t:${Math.floor(Date.now() / 1000)}:F>`)
             .setColor(corFinal)
-            .setThumbnail(guild.iconURL({ dynamic: true }) || null)
-            .setFooter({ text: `Guild ID: ${guild.id} • Nero CyberSec`, iconURL: client.user.displayAvatarURL() });
+            .setFooter({ text: `Nero CyberSec Systems` });
 
         if (campos && campos.length > 0) embedServidor.addFields(campos);
-
         if (informacoesUsuario) {
-            embedServidor.addFields([
-                { name: '👤 Infrator / Alvo', value: `**Tag:** \`${informacoesUsuario.tag}\`\n**Menção:** ${informacoesUsuario}\n**ID:** \`${informacoesUsuario.id}\``, inline: false }
-            ]);
+            embedServidor.addFields([{ name: '👤 Alvo / Autor', value: `**Tag:** \`${informacoesUsuario.tag}\` | **ID:** \`${informacoesUsuario.id}\``, inline: false }]);
         }
 
         if (canalLogs) await canalLogs.send({ embeds: [embedServidor] });
-    } catch (e) {
-        terminalLog('error', `Falha ao organizar logs: ${e.message}`);
-    }
+    } catch (e) {}
 }
 
 const PALAVROES = [
@@ -246,12 +277,13 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    await enviarDM("🚀 Status do Sistema", `Nero v2.5.0 atualizado com a Llama 3.3 da Groq com sucesso.`, '#00FF00');
+    await enviarDM("🚀 Status do Sistema", `Nero Core operacional integrado. Modelo Llama-3.3 carregado e escuta ativa de exceções ativada.`, '#00FF00');
 
     const commands = [
+        new SlashCommandBuilder().setName('versao').setDescription('Exibe a versão operacional atual do Core bot.'),
         new SlashCommandBuilder().setName('autorole').setDescription('Define cargo automático.').addRoleOption(o => o.setName('cargo').setDescription('Cargo').setRequired(true)),
-        new SlashCommandBuilder().setName('setup-server').setDescription('[OWNER] Monta a infraestrutura gótica de canais do servidor.'),
-        new SlashCommandBuilder().setName('cargo').setDescription('[OWNER] Cria os 31 cargos temáticos estilo TikTok memes 2026.'),
+        new SlashCommandBuilder().setName('setup-server').setDescription('[OWNER] Monta a infraestrutura de canais do servidor.'),
+        new SlashCommandBuilder().setName('cargo').setDescription('[OWNER] Cria os 31 cargos temáticos estilo TikTok memes.'),
         new SlashCommandBuilder().setName('setup-logs').setDescription('[OWNER] Cria ou recria o canal de logs privado.'),
         new SlashCommandBuilder().setName('ban').setDescription('Bane um membro.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)).addStringOption(o => o.setName('motivo').setDescription('Motivo')),
         new SlashCommandBuilder().setName('mute').setDescription('Silencia temporariamente.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)).addIntegerOption(o => o.setName('tempo').setDescription('Tempo em minutos').setRequired(true)),
@@ -300,19 +332,18 @@ client.on('messageCreate', async (message) => {
             
             if (analise.acoesExecutadas && analise.acoesExecutadas.length > 0) {
                 const embedAcoes = new EmbedBuilder()
-                    .setTitle("🛠️ Execuções do Core Realizadas")
-                    .setColor("#6366F1")
+                    .setTitle("⚙️ Execuções do Núcleo")
+                    .setColor("#34D399")
                     .setDescription(analise.acoesExecutadas.join('\n'));
                 
                 await message.reply({ content: analise.respostaTexto, embeds: [embedAcoes] });
-                await enviarLog(message.guild, 'Punição/Ordem de Chat', `IA executou comandos diretamente pelo chat comum.`, '#6366F1', [{ name: 'Comando original', value: message.content }]);
+                await enviarLog(message.guild, 'Painel IA Executado', `Comandos estruturados disparados pelo chat de voz/texto.`, '#34D399', [{ name: 'Entrada original', value: message.content }]);
             } else {
                 await message.reply(analise.respostaTexto);
             }
             return;
         } catch (err) {
-            terminalLog('error', `Erro na IA: ${err.message}`);
-            return message.reply("Deu um tilt nas minhas redes da Llama agora.");
+            return message.reply("Falha no barramento neural.");
         }
     }
 
@@ -331,12 +362,11 @@ client.on('messageCreate', async (message) => {
             await message.delete();
             await enviarLog(
                 message.guild, 
-                'Mensagem Retida por Violação', 
-                `Uma mensagem foi interceptada e expurgada automaticamente do canal ${message.channel}.`, 
+                'Mensagem Filtrada', 
+                `Conteúdo impróprio expurgado do canal ${message.channel}.`, 
                 '#D32F2F', 
                 [
-                    { name: '💬 Conteúdo Bruto Filtrado', value: `|| ${message.content} ||`, inline: false },
-                    { name: '📍 Canal Relacionado', value: `${message.channel} (\`#${message.channel.name}\`)`, inline: true }
+                    { name: '💬 Conteúdo', value: `|| ${message.content} ||`, inline: false }
                 ],
                 message.author
             );
@@ -347,6 +377,21 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, options, guild } = interaction;
+
+    if (commandName === 'versao') {
+        const embedVersao = new EmbedBuilder()
+            .setTitle('🧠 Proxy/Nero Core System')
+            .setColor('#6366F1')
+            .setDescription('Status de integridade do barramento do bot e compilação do núcleo.')
+            .addFields([
+                { name: '📦 Versão do Software', value: '`v2.6.0-stable`', inline: true },
+                { name: '🤖 Arquitetura IA', value: '`Llama-3.3-70b-versatile (Groq API)`', inline: true },
+                { name: '⚡ Latência da API', value: `\`${Math.round(client.ws.ping)}ms\``, inline: true },
+                { name: '🛡️ Filtro de Ofensas', value: config.filtroXingamentosAtivo ? '`Ativo`' : '`Inativo`', inline: true }
+            ])
+            .setTimestamp();
+        return interaction.reply({ embeds: [embedVersao] });
+    }
 
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages) && !isOwner(interaction.user.id)) {
         return interaction.reply({ content: '⛔ Sem permissão.', ephemeral: true });
@@ -418,7 +463,7 @@ client.on('interactionCreate', async interaction => {
         const tempo = options.getInteger('tempo');
         const target = await guild.members.fetch(membro.id);
         await target.timeout(tempo * 60 * 1000);
-        return interaction.reply(`🤫 Mutado por ${tempo} minutos.`);
+        return interaction.reply(`🤫 Mutado por ${tempo} minutes.`);
     }
 
     if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Restrito ao Dono.', ephemeral: true });
@@ -437,7 +482,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'cargo') {
-        await interaction.reply('🔥 Gerando os 31 cargos temáticos baseados nas trends do TikTok e memes de 2026...');
+        await interaction.reply('🔥 Gerando os 31 cargos temáticos...');
         const cargosParaCriar = [
             "🧠 ✦ Sigma da Bahia","🗿 ✦ GigaChad Original","⛓️ ✦ Emo do Tiktok","🍷 ✦ Fino do Fino","💀 ✦ Ohio Resident",
             "💀 ✦ Cérebro Derretido","🩸 ✦ Cria de Jequié","💻 ✦ Script God","🌟 ✦ Patrocinador Premium",
@@ -453,7 +498,7 @@ client.on('interactionCreate', async interaction => {
                 await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo executado' });
             }
         }
-        return interaction.editReply('🔥 Todos os 31 cargos temáticos de memes/TikTok foram gerados e injetados com sucesso!');
+        return interaction.editReply('🔥 Todos os 31 cargos temáticos injetados com sucesso!');
     }
 
     if (commandName === 'neural') {
