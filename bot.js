@@ -8,6 +8,7 @@ const backup = require('discord-backup');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const axios = require('axios'); 
 const Groq = require('groq-sdk'); 
 
 const client = new Client({
@@ -36,15 +37,27 @@ function terminalLog(level, message) {
 let groq = null;
 if (GROQ_API_KEY) {
     groq = new Groq({ apiKey: GROQ_API_KEY });
-    terminalLog('success', 'Módulo Llama 3.3 (Core Control) injetado com sucesso.');
+    terminalLog('success', 'Módulo Groq (Vision & Core) injetado com sucesso.');
 } else {
     terminalLog('warn', 'GROQ_API_KEY ausente.');
 }
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// ENGINE DE PROCESSAMENTO INTELIGENTE (SEM SCRIPT DE PERSONALIDADE INÚTIL - MÁXIMO CONTROLE)
-async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
+async function urlToBase64(url) {
+    try {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data, 'binary');
+        const mimeType = response.headers['content-type'];
+        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    } catch (e) {
+        terminalLog('error', `Falha ao converter imagem para Base64: ${e.message}`);
+        return null;
+    }
+}
+
+// ENGINE DE PROCESSAMENTO INTELIGENTE COM SUPORTE A VISÃO COMPUTACIONAL CORRIGIDO
+async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem, imageUrl = null) {
     if (!groq) return { respostaTexto: "Erro: Conexão com o cérebro Groq indisponível.", acoesExecutadas: [] };
 
     const membrosDisponiveis = guild.members.cache.map(m => ({ id: m.id, tag: m.user.tag, nome: m.displayName.toLowerCase() }));
@@ -53,7 +66,9 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
     const systemPrompt = `
     CONDIÇÃO DE SISTEMA: Você é o Core Operacional do bot Nero/Proxy. Um sistema de administração e segurança de alto nível, frio, direto, foda e extremamente focado em eficiência. Sem rodeios, sem falas robóticas e sem criar personas bobas. Responda de igual para igual.
 
-    Você monitora o chat. Se o Dono (ID: "${OWNER_ID}") solicitar qualquer ordem administrativa ou controle de servidores via linguagem natural, você tem a capacidade técnica de executar as seguintes funções através da estrutura JSON de saída.
+    DIRETRIZ DE VISÃO E ANÁLISE: Se uma imagem for fornecida na requisição, analise-a perfeitamente. Diga exatamente o que vê nela com precisão cirúrgica e comente o que achou de mais foda, interessante ou chamativo na imagem. Você está totalmente autorizado a interagir de forma direta sobre o conteúdo visual, sem ficar preso a comandos se o usuário estiver apenas conversando ou mostrando algo.
+
+    Você monitora o chat. Se o Dono (ID: "${OWNER_ID}") solicitar qualquer ordem administrativa ou controle de servidores via linguagem natural, você executará as funções através da estrutura JSON de saída.
 
     Ações administrativas mapeadas e suportadas (Apenas se requisitado pelo Dono):
     - "banir_membro": { "membroId": "string", "motivo": "string" }
@@ -73,20 +88,33 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
 
     Saída estrita: Responda unicamente com JSON válido, sem blocos markdown (\`\`\`). Exemplo de formato:
     {
-       "respostaTexto": "Sua resposta curta e direta confirmando a ação no chat.",
+       "respostaTexto": "Sua descrição detalhada da imagem e o que achou legal nela, OU a confirmação direta da ação executada.",
        "acoes": [ { "acao": "nome_da_acao", "dados": { ... } } ]
     }
     `;
 
     const acoesExecutadas = [];
+    let modeloDefinido = 'llama-3.3-70b-versatile'; 
+    let ConteudoMensagemUser = `Usuário [${authorId}] enviou: "${prompt}"`;
+
+    if (imageUrl) {
+        modeloDefinido = 'llama-3.2-11b-vision-preview'; 
+        const imageBase64 = await urlToBase64(imageUrl);
+        if (imageBase64) {
+            ConteudoMensagemUser = [
+                { type: "text", text: `Usuário [${authorId}] enviou o texto: "${prompt || 'Analise esta imagem.'}"` },
+                { type: "image_url", image_url: { url: imageBase64 } }
+            ];
+        }
+    }
 
     try {
         const chatCompletion = await groq.chat.completions.create({
             messages: [
                 { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Usuário [${authorId}] enviou: "${prompt}"` }
+                { role: 'user', content: ConteudoMensagemUser }
             ],
-            model: 'llama-3.3-70b-versatile',
+            model: modeloDefinido,
             temperature: 0.3,
         });
 
@@ -158,11 +186,10 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
 
         return { respostaTexto: resultado.respostaTexto, acoesExecutadas };
     } catch (e) {
-        // REPORT DE ERRO CRÍTICO DA IA DIRETO NO SEU PRIVADO
         terminalLog('error', `Falha crítica no processamento da IA: ${e.message}`);
         await enviarDM(
             "🚨 ALERTA CRÍTICO: Falha no Core Groq/Llama", 
-            `Ocorreu um erro operacional enquanto processava uma instrução de texto.\n\n**Erro:** \`${e.message}\`\n**Entrada do Usuário:** "${prompt}"`, 
+            `Ocorreu um erro operacional enquanto processava uma instrução de texto/imagem.\n\n**Erro:** \`${e.message}\`\n**Entrada do Usuário:** "${prompt}"`, 
             '#FF0000'
         );
         return { respostaTexto: "Interrupção interna no processamento de ações. O relatório do erro foi enviado ao PV do proprietário.", acoesExecutadas: [] };
@@ -203,7 +230,7 @@ async function getOrCreateLogsChannel(guild) {
     } catch (e) { return null; }
 }
 
-async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuario = null) {
+async function enviarLog(guild, titulo, Franciscan, cor, campos, informacoesUsuario = null) {
     try {
         const canalLogs = await getOrCreateLogsChannel(guild);
         const corFinal = cor || '#0B0A14';
@@ -211,7 +238,7 @@ async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuar
         const embedServidor = new EmbedBuilder()
             .setAuthor({ name: 'Nero Security Core', iconURL: client.user.displayAvatarURL() })
             .setTitle(`🛡️ Log — ${titulo}`)
-            .setDescription(`${descricao}\n\n**Data:** <t:${Math.floor(Date.now() / 1000)}:F>`)
+            .setDescription(`${Franciscan}\n\n**Data:** <t:${Math.floor(Date.now() / 1000)}:F>`)
             .setColor(corFinal)
             .setFooter({ text: `Nero CyberSec Systems` });
 
@@ -277,7 +304,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    await enviarDM("🚀 Status do Sistema", `Nero Core operacional integrado. Modelo Llama-3.3 carregado e escuta ativa de exceções ativada.`, '#00FF00');
+    await enviarDM("🚀 Status do Sistema", `Nero Core operacional integrado. Modelo Llama-3.3 e Llama Vision prontos.`, '#00FF00');
 
     const commands = [
         new SlashCommandBuilder().setName('versao').setDescription('Exibe a versão operacional atual do Core bot.'),
@@ -316,11 +343,22 @@ client.on('messageCreate', async (message) => {
     const falouNomeBot = message.content.toLowerCase().includes('proxy') || message.content.toLowerCase().includes('nero');
     
     let ehRespostaAoBot = false;
+    let imagemDetectadaUrl = null;
+
     if (message.reference) {
         try {
             const msgRef = await message.channel.messages.fetch(message.reference.messageId);
             if (msgRef && msgRef.author.id === client.user.id) ehRespostaAoBot = true;
+            if (msgRef && msgRef.attachments.size > 0) {
+                const firstAttach = msgRef.attachments.first();
+                if (firstAttach.contentType && firstAttach.contentType.startsWith('image/')) imagemDetectadaUrl = firstAttach.url;
+            }
         } catch(e) {}
+    }
+
+    if (message.attachments.size > 0) {
+        const firstAttach = message.attachments.first();
+        if (firstAttach.contentType && firstAttach.contentType.startsWith('image/')) imagemDetectadaUrl = firstAttach.url;
     }
 
     if (foiMarcado || ehRespostaAoBot || (falouNomeBot && message.content.length > 5)) {
@@ -328,7 +366,7 @@ client.on('messageCreate', async (message) => {
             await message.channel.sendTyping();
             let textoLimpo = message.content.replace(`<@${client.user.id}>`, '').trim();
 
-            const analise = await processarMensagemChatIA(message.guild, textoLimpo, message.author.id, message.channel);
+            const analise = await processarMensagemChatIA(message.guild, textoLimpo, message.author.id, message.channel, imagemDetectadaUrl);
             
             if (analise.acoesExecutadas && analise.acoesExecutadas.length > 0) {
                 const embedAcoes = new EmbedBuilder()
@@ -362,7 +400,7 @@ client.on('messageCreate', async (message) => {
             await message.delete();
             await enviarLog(
                 message.guild, 
-                'Mensagem Filtrada', 
+                'Mecanismo Filtrado', 
                 `Conteúdo impróprio expurgado do canal ${message.channel}.`, 
                 '#D32F2F', 
                 [
@@ -384,8 +422,8 @@ client.on('interactionCreate', async interaction => {
             .setColor('#6366F1')
             .setDescription('Status de integridade do barramento do bot e compilação do núcleo.')
             .addFields([
-                { name: '📦 Versão do Software', value: '`v2.6.0-stable`', inline: true },
-                { name: '🤖 Arquitetura IA', value: '`Llama-3.3-70b-versatile (Groq API)`', inline: true },
+                { name: '📦 Versão do Software', value: '`v2.7.0-vision`', inline: true },
+                { name: '🤖 Arquitetura IA', value: '`Llama-3.3-70b & Llama-3.2-Vision`', inline: true },
                 { name: '⚡ Latência da API', value: `\`${Math.round(client.ws.ping)}ms\``, inline: true },
                 { name: '🛡️ Filtro de Ofensas', value: config.filtroXingamentosAtivo ? '`Ativo`' : '`Inativo`', inline: true }
             ])
@@ -463,7 +501,7 @@ client.on('interactionCreate', async interaction => {
         const tempo = options.getInteger('tempo');
         const target = await guild.members.fetch(membro.id);
         await target.timeout(tempo * 60 * 1000);
-        return interaction.reply(`🤫 Mutado por ${tempo} minutes.`);
+        return interaction.reply(`🤫 Mutado por ${tempo} minutos.`);
     }
 
     if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Restrito ao Dono.', ephemeral: true });
