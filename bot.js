@@ -1,6 +1,6 @@
 const TOKEN = process.env.DISCORD_TOKEN;
 const OWNER_ID = process.env.DISCORD_OWNER_ID;
-const GROQ_API_KEY = process.env.GROQ_API_KEY; // Atualizado para usar a chave do Render
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
@@ -8,7 +8,7 @@ const backup = require('discord-backup');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const Groq = require('groq-sdk'); // Importação da Groq acoplada
+const Groq = require('groq-sdk');
 
 const client = new Client({
     intents: [
@@ -36,25 +36,36 @@ function terminalLog(level, message) {
 let groq = null;
 if (GROQ_API_KEY) {
     groq = new Groq({ apiKey: GROQ_API_KEY });
-    terminalLog('success', 'Módulo Llama 3 (Groq) injetado com sucesso no Core.');
+    terminalLog('success', 'Módulo Llama 3 (Groq) ativo.');
 } else {
-    terminalLog('warn', 'GROQ_API_KEY não configurada no painel do Render.');
+    terminalLog('warn', 'GROQ_API_KEY ausente no Render.');
 }
 
 function isOwner(userId) { return userId === OWNER_ID; }
 
-// ENGINE DE PROCESSAMENTO NEURAL LLAMA 3 (CONVERSA + COMANDOS AUTOMÁTICOS POR TEXTO DIRETO)
+async function enviarDM(titulo, message, cor, embedsExtras = []) {
+    try {
+        if (!OWNER_ID) return;
+        const owner = await client.users.fetch(OWNER_ID);
+        const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
+        await owner.send({ embeds: [embed, ...embedsExtras] });
+    } catch (e) {}
+}
+
+// ENGINE DE PROCESSAMENTO NEURAL AJUSTADA COM NOTIFICAÇÃO CRÍTICA NO PV DO DONO
 async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
-    if (!groq) return { respostaTexto: "Deu um piripaque na minha IA. A chave GROQ_API_KEY não foi configurada no Render.", acoesExecutadas: [] };
+    if (!groq) {
+        throw new Error("Subsistema Groq desativado. Verifique a chave GROQ_API_KEY no painel.");
+    }
 
     const membrosDisponiveis = guild.members.cache.map(m => ({ id: m.id, tag: m.user.tag, nome: m.displayName.toLowerCase() }));
     const cargosDisponiveis = guild.roles.cache.map(r => ({ id: r.id, nome: r.name.toLowerCase() }));
 
     const systemPrompt = `
-    CONDIÇÃO DE SISTEMA: Você é o Nero/NaniBot, um assistente virtual gótico altamente inteligente, autêntico, adaptável e com um toque de sagacidade. Fale de igual para igual, de forma direta, clara, foda e use gírias naturais.
-    Você recebe mensagens do chat comum. Se for uma conversa comum, responda de forma autêntica e sarcástica.
+    CONDIÇÃO DE SISTEMA: Você é o Nero/NaniBot, um assistente virtual gótico altamente inteligente, autêntico e direto. Fale de igual para igual, de forma clara, foda e use gírias naturais.
+    Você está respondendo no chat comum.
     
-    Se o autor da mensagem for o Dono do bot (ID igual a "${OWNER_ID}") e ele solicitar uma punição ou comando administrativo por texto (ex: banir, mutar, dar cargo, limpar chat), você deve identificar as intenções e estruturar as ações. Se não for o dono pedindo punição, recuse com deboche.
+    Se o autor da mensagem for o Dono (ID: "${OWNER_ID}") e ele pedir punições/comandos (banir, mutar, dar cargo, limpar chat), identifique as intenções e estruture as ações.
 
     Ações suportadas (Apenas para o Dono):
     - "criar_cargo": { "nome": "string" }
@@ -63,84 +74,79 @@ async function processarMensagemChatIA(guild, prompt, authorId, canalMensagem) {
     - "banir_membro": { "membroId": "string", "motivo": "string" }
     - "mutar_membro": { "membroId": "string", "tempoMinutos": number }
 
-    Dados do servidor para cruzamento:
-    Membros: ${JSON.stringify(membrosDisponiveis.slice(0, 70))}
+    Membros: ${JSON.stringify(membrosDisponiveis.slice(0, 60))}
     Cargos: ${JSON.stringify(cargosDisponiveis)}
 
-    Saída obrigatória: Responda APENAS em formato JSON bruto, sem blocos de código markdown. Formato:
-    {
-       "respostaTexto": "Sua resposta falada para o chat aqui",
-       "acoes": [ { "acao": "nome_da_acao", "dados": { ... } } ]
-    }
+    Saída obrigatória: Você deve responder APENAS em formato JSON puro, sem blocos de código markdown. Exemplo de estrutura:
+    {"respostaTexto": "Sua resposta aqui", "acoes": []}
     `;
+
+    const chatCompletion = await groq.chat.completions.create({
+        messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `Usuário [${authorId}] enviou: "${prompt}"` }
+        ],
+        model: 'llama3-70b-8192',
+        temperature: 0.4,
+    });
+
+    const respostaBruta = chatCompletion.choices[0]?.message?.content?.trim();
+    
+    // Tratamento robusto para extrair o JSON caso a IA use blocos de código markdown por engano
+    let jsonLimpo = respostaBruta;
+    if (jsonLimpo.includes("```")) {
+        jsonLimpo = jsonLimpo.replace(/```json/g, "").replace(/```/g, "").trim();
+    }
+
+    let resultado;
+    try {
+        resultado = JSON.parse(jsonLimpo);
+    } catch (err) {
+        // Se falhar o parse, força uma estrutura básica para não quebrar o fluxo e podermos reportar
+        throw new Error(`Falha de parsing no JSON da IA. Resposta bruta: \`\`\`text\n${respostaBruta}\n\`\`\``);
+    }
 
     const acoesExecutadas = [];
 
-    try {
-        const chatCompletion = await groq.chat.completions.create({
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Usuário [${authorId}] enviou: "${prompt}"` }
-            ],
-            model: 'llama3-70b-8192',
-            temperature: 0.5,
-        });
-
-        const respostaBruta = chatCompletion.choices[0]?.message?.content?.trim();
-        const jsonLimpo = respostaBruta.replace(/^```json|```$/g, '').trim();
-        const resultado = JSON.parse(jsonLimpo);
-
-        if (resultado.acoes && resultado.acoes.length > 0 && authorId === OWNER_ID) {
-            for (const ordem of resultado.acoes) {
-                switch (ordem.acao) {
-                    case 'criar_cargo': {
-                        const r = await guild.roles.create({ name: ordem.dados.nome, reason: 'Terminal de Chat Llama' });
-                        acoesExecutadas.push(`🔹 Cargo **${r.name}** gerado via texto.`);
-                        break;
+    if (resultado.acoes && resultado.acoes.length > 0 && authorId === OWNER_ID) {
+        for (const ordem of resultado.acoes) {
+            switch (ordem.acao) {
+                case 'criar_cargo': {
+                    const r = await guild.roles.create({ name: ordem.dados.nome, reason: 'Ordem de chat Llama' });
+                    acoesExecutadas.push(`🔹 Cargo **${r.name}** gerado via texto.`);
+                    break;
+                }
+                case 'atribuir_cargo': {
+                    const m = await guild.members.fetch(ordem.dados.membroId);
+                    const r = guild.roles.cache.get(ordem.dados.cargoId);
+                    if (m && r) { await m.roles.add(r); acoesExecutadas.push(`👑 Cargo ${r.name} entregue a ${m}.`); }
+                    break;
+                }
+                case 'limpar_mensagens': {
+                    const qtd = Math.min(ordem.dados.quantidade, 100);
+                    await canalMensagem.bulkDelete(qtd, true);
+                    acoesExecutadas.push(`🧹 Expurgadas ${qtd} mensagens via IA.`);
+                    break;
+                }
+                case 'banir_membro': {
+                    const m = await guild.members.fetch(ordem.dados.membroId);
+                    if (m) {
+                        await guild.members.ban(m.id, { reason: ordem.dados.motivo || 'Banido via chat IA pelo Dono' });
+                        acoesExecutadas.push(`🔨 **${m.user.tag}** foi expurgado do servidor.`);
                     }
-                    case 'atribuir_cargo': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
-                        const r = guild.roles.cache.get(ordem.dados.cargoId);
-                        if (m && r) { await m.roles.add(r); acoesExecutadas.push(`👑 Cargo ${r.name} entregue a ${m}.`); }
-                        break;
-                    }
-                    case 'limpar_mensagens': {
-                        const qtd = Math.min(ordem.dados.quantidade, 100);
-                        await canalMensagem.bulkDelete(qtd, true);
-                        acoesExecutadas.push(`🧹 Expurgadas ${qtd} mensagens via IA.`);
-                        break;
-                    }
-                    case 'banir_membro': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
-                        if (m) {
-                            await guild.members.ban(m.id, { reason: ordem.dados.motivo || 'Banido via chat IA pelo Dono' });
-                            acoesExecutadas.push(`🔨 **${m.user.tag}** foi expurgado do servidor.`);
-                        }
-                        break;
-                    }
-                    case 'mutar_membro': {
-                        const m = await guild.members.fetch(ordem.dados.membroId);
-                        const tempo = ordem.dados.tempoMinutos || 10;
-                        if (m) { await m.timeout(tempo * 60 * 1000); acoesExecutadas.push(`🤫 **${m.user.tag}** isolado por ${tempo} minutos.`); }
-                        break;
-                    }
+                    break;
+                }
+                case 'mutar_membro': {
+                    const m = await guild.members.fetch(ordem.dados.membroId);
+                    const tempo = ordem.dados.tempoMinutos || 10;
+                    if (m) { await m.timeout(tempo * 60 * 1000); acoesExecutadas.push(`🤫 **${m.user.tag}** isolado por ${tempo} minutos.`); }
+                    break;
                 }
             }
         }
-
-        return { respostaTexto: resultado.respostaTexto, acoesExecutadas };
-    } catch (e) {
-        return { respostaTexto: "Tive um soluço nas minhas conexões neurais aqui.", acoesExecutadas: [] };
     }
-}
 
-async function enviarDM(titulo, message, cor, embedsExtras = []) {
-    try {
-        if (!OWNER_ID) return;
-        const owner = await client.users.fetch(OWNER_ID);
-        const embed = new EmbedBuilder().setColor(cor || '#0B0A14').setTitle(titulo).setDescription(message).setTimestamp();
-        await owner.send({ embeds: [embed, ...embedExtras] });
-    } catch (e) {}
+    return { respostaTexto: resultado.respostaTexto, acoesExecutadas };
 }
 
 async function getOrCreateLogsChannel(guild) {
@@ -153,7 +159,7 @@ async function getOrCreateLogsChannel(guild) {
         const ch = await guild.channels.create({
             name: './/nero-logs',
             type: ChannelType.GuildText,
-            topic: 'Sistema de logs privado — NaniBot Nero v2.5.0',
+            topic: 'Sistema de logs privado — NaniBot Nero v2.5.2',
             permissionOverwrites: [
                 { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
@@ -174,23 +180,18 @@ async function enviarLog(guild, titulo, descricao, cor, campos, informacoesUsuar
         const embedServidor = new EmbedBuilder()
             .setAuthor({ name: 'Nero Moderation Security', iconURL: client.user.displayAvatarURL({ dynamic: true }) })
             .setTitle(`🛡️ Sistema de Monitoramento — ${titulo}`)
-            .setDescription(`${descricao}\n\n**Ocorrência registrada às:** <t:${Math.floor(Date.now() / 1000)}:F> (<t:${Math.floor(Date.now() / 1000)}:R>)`)
+            .setDescription(`${descricao}\n\n**Ocorrência registrada às:** <t:${Math.floor(Date.now() / 1000)}:F>`)
             .setColor(corFinal)
             .setThumbnail(guild.iconURL({ dynamic: true }) || null)
-            .setFooter({ text: `Guild ID: ${guild.id} • Nero CyberSec`, iconURL: client.user.displayAvatarURL() });
+            .setFooter({ text: `Nero CyberSec`, iconURL: client.user.displayAvatarURL() });
 
         if (campos && campos.length > 0) embedServidor.addFields(campos);
-
         if (informacoesUsuario) {
-            embedServidor.addFields([
-                { name: '👤 Infrator / Alvo', value: `**Tag:** \`${informacoesUsuario.tag}\`\n**Menção:** ${informacoesUsuario}\n**ID:** \`${informacoesUsuario.id}\``, inline: false }
-            ]);
+            embedServidor.addFields([{ name: '👤 Infrator / Alvo', value: `**Tag:** \`${informacoesUsuario.tag}\`\n**ID:** \`${informacoesUsuario.id}\``, inline: false }]);
         }
 
         if (canalLogs) await canalLogs.send({ embeds: [embedServidor] });
-    } catch (e) {
-        terminalLog('error', `Falha ao organizar logs: ${e.message}`);
-    }
+    } catch (e) {}
 }
 
 const PALAVROES = [
@@ -246,7 +247,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('ready', async () => {
     terminalLog('success', `Online em: ${client.user.tag}`);
-    await enviarDM("🚀 Status do Sistema", `Nero v2.5.0 atualizado com a Llama 3 da Groq com sucesso.`, '#00FF00');
+    await enviarDM("🚀 Status do Sistema", `Nero v2.5.2 atualizado com redirecionamento de erros estruturais.`, '#00FF00');
 
     const commands = [
         new SlashCommandBuilder().setName('autorole').setDescription('Define cargo automático.').addRoleOption(o => o.setName('cargo').setDescription('Cargo').setRequired(true)),
@@ -276,12 +277,10 @@ client.on('ready', async () => {
     } catch (e) {}
 });
 
-// INTERCEPTADOR DE MENSAGENS COM PALAVRÕES, REGISTROS NEURAIS E CHAT INTELIGENTE COM LLAMA 3
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     trackNeural(message);
 
-    // GATILHO CHAT INTELIGENTE (Marcar bot ou digitar os nomes chaves 'proxy' ou 'nero')
     const foiMarcado = message.mentions.has(client.user) && !message.content.includes('@everyone') && !message.content.includes('@here');
     const falouNomeBot = message.content.toLowerCase().includes('proxy') || message.content.toLowerCase().includes('nero');
     
@@ -293,32 +292,38 @@ client.on('messageCreate', async (message) => {
         } catch(e) {}
     }
 
-    if (foiMarcado || ehRespostaAoBot || (falouNomeBot && message.content.length > 5)) {
+    if (foiMarcado || ehRespostaAoBot || (falouNomeBot && message.content.length > 2)) {
         try {
             await message.channel.sendTyping();
             let textoLimpo = message.content.replace(`<@${client.user.id}>`, '').trim();
 
             const analise = await processarMensagemChatIA(message.guild, textoLimpo, message.author.id, message.channel);
             
+            // EMBED DE RESPOSTA ESTILOSA DO NERO RESTAURADA NO CHAT
+            const embedResposta = new EmbedBuilder()
+                .setColor('#0B0A14')
+                .setDescription(analise.respostaTexto)
+                .setTimestamp()
+                .setFooter({ text: `Nero Engine • Llama 3 Core`, iconURL: client.user.displayAvatarURL() });
+
             if (analise.acoesExecutadas && analise.acoesExecutadas.length > 0) {
-                const embedAcoes = new EmbedBuilder()
-                    .setTitle("🛠️ Execuções do Core Executadas")
-                    .setColor("#6366F1")
-                    .setDescription(analise.acoesExecutadas.join('\n'));
-                
-                await message.reply({ content: analise.respostaTexto, embeds: [embedAcoes] });
-                await enviarLog(message.guild, 'Punição/Ordem de Chat', `IA executou comandos diretamente pelo chat comum.`, '#6366F1', [{ name: 'Comando original', value: message.content }]);
+                embedResposta.addFields({ name: "🛠️ Sistemas Acionados", value: analise.acoesExecutadas.join('\n') });
+                await message.reply({ embeds: [embedResposta] });
+                await enviarLog(message.guild, 'Punição via Chat', `Executado diretamente por texto.`, '#6366F1', [{ name: 'Input', value: message.content }]);
             } else {
-                await message.reply(analise.respostaTexto);
+                await message.reply({ embeds: [embedResposta] });
             }
             return;
         } catch (err) {
             terminalLog('error', `Erro na IA: ${err.message}`);
-            return message.reply("Deu um tilt nas minhas redes da Llama agora.");
+            
+            // RESTAURADO: AGORA ENVIA O ERRO REAL DIRETO NO SEU PV PARA DEBUGAÇÃO
+            await enviarDM("❌ Falha Operacional no Llama Core", `**Erro registrado:**\n${err.message}`, '#FF0000');
+            
+            return message.reply("Deu um piripaque na minha IA. Já mandei os detalhes do erro estrutural pro meu dono no privado.");
         }
     }
 
-    // FILTRO DE PALAVRÕES ORIGINAL INTEGRAL
     if (config.filtroXingamentosAtivo === false) return;
     
     const textoNorm = normalizarTexto(message.content);
@@ -335,11 +340,10 @@ client.on('messageCreate', async (message) => {
             await enviarLog(
                 message.guild, 
                 'Mensagem Retida por Violação', 
-                `Uma mensagem foi interceptada e expurgada automaticamente do canal ${message.channel}.`, 
+                `Uma mensagem foi interceptada automaticamente no canal ${message.channel}.`, 
                 '#D32F2F', 
                 [
-                    { name: '💬 Conteúdo Bruto Filtrado', value: `|| ${message.content} ||`, inline: false },
-                    { name: '📍 Canal Relacionado', value: `${message.channel} (\`#${message.channel.name}\`)`, inline: true }
+                    { name: '💬 Conteúdo Filtrado', value: `|| ${message.content} ||`, inline: false }
                 ],
                 message.author
             );
@@ -347,7 +351,7 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// INTERAÇÕES VIA SLASH COMMANDS EXATAMENTE IGUAIS AO SEU SCRIPT ANTIGO
+// SLASH COMMANDS MANTIDOS INTEGRAIS
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, options, guild } = interaction;
@@ -433,15 +437,13 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'setup-server') {
-        await interaction.reply('⚡ Estruturando canais, portaria e segurança do servidor...');
-        try {
-            await guild.channels.create({ name: '─── PORTARIA ───', type: ChannelType.GuildCategory });
-        } catch(e) {}
+        await interaction.reply('⚡ Estruturando canais...');
+        try { await guild.channels.create({ name: '─── PORTARIA ───', type: ChannelType.GuildCategory }); } catch(e) {}
         return interaction.editReply('⚡ Infraestrutura de canais criada com sucesso!');
     }
 
     if (commandName === 'cargo') {
-        await interaction.reply('🔥 Gerando os 31 cargos temáticos baseados nas trends do TikTok e memes de 2026...');
+        await interaction.reply('🔥 Gerando os 31 cargos...');
         const cargosParaCriar = [
             "🧠 ✦ Sigma da Bahia","🗿 ✦ GigaChad Original","⛓️ ✦ Emo do Tiktok","🍷 ✦ Fino do Fino","💀 ✦ Ohio Resident",
             "💀 ✦ Cérebro Derretido","🩸 ✦ Cria de Jequié","💻 ✦ Script God","🌟 ✦ Patrocinador Premium",
@@ -454,10 +456,10 @@ client.on('interactionCreate', async interaction => {
         ];
         for (const nomeCargo of cargosParaCriar) {
             if (!guild.roles.cache.some(r => r.name === nomeCargo)) {
-                await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo executado' });
+                await guild.roles.create({ name: nomeCargo, reason: 'Comando /cargo' });
             }
         }
-        return interaction.editReply('🔥 Todos os 31 cargos temáticos de memes/TikTok foram gerados e injetados com sucesso!');
+        return interaction.editReply('🔥 Todos os 31 cargos temáticos injetados!');
     }
 
     if (commandName === 'neural') {
