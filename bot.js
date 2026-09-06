@@ -70,7 +70,7 @@ async function enviarDM(titulo, mensagem, cor) {
     try {
         if (!OWNER_ID) return;
         const owner = await client.users.fetch(OWNER_ID);
-        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(mensagem).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Sistema de Logs' });
+        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(mensagem).setTimestamp().setFooter({ text: 'Proxxy v3.1.0 • Sistema de informaçoes' });
         await owner.send({ embeds: [embed] });
     } catch (e) {}
 }
@@ -96,7 +96,7 @@ async function getOrCreateLogsChannel(guild, createIfMissing = false) {
         const ch = await guild.channels.create({
             name: './/nero-logs',
             type: ChannelType.GuildText,
-            topic: 'Sistema de logs privado — NaniBot Nero v2.4.1',
+            topic: 'Sistema informaçoes sobre o bot — Proxxy nerinho rei v3.1.0',
             permissionOverwrites: [
                 { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
@@ -113,7 +113,7 @@ async function enviarLog(guild, titulo, descricao, cor, campos) {
     try {
         const ch = await getOrCreateLogsChannel(guild, false);
         if (!ch) return;
-        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(descricao).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Nero Logs' });
+        const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(descricao).setTimestamp().setFooter({ text: 'Proxxy v3.1.0 • Nero Logs' });
         if (campos) embed.addFields(campos);
         await ch.send({ embeds: [embed] });
     } catch (e) {}
