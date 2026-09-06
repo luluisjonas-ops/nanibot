@@ -729,7 +729,7 @@ client.on('interactionCreate', async interaction => {
         const limite = config.warnLimit || 3;
         const embed = new EmbedBuilder().setColor('#1C1A27').setTitle('⚠️ Advertência — Sistema Nero').setDescription(`${alvo} recebeu uma advertência.`).addFields({ name: 'Motivo', value: `\`${motivo}\``, inline: false }, { name: 'Staff', value: `\`${interaction.user.tag}\``, inline: true }, { name: 'Total', value: `\`${total}/${limite}\``, inline: true }).setTimestamp().setFooter({ text: 'NaniBot v2.4.1' });
         await interaction.reply({ embeds: [embed] });
-        await enviarLog(guild, '⚠️ Warn Registrado', `Advertência adicionada ao histórico.`, '#FFAA00', [
+        await enviarLog(guild, '⚠️ Warn Registrado!', `Advertência adicionada ao histórico.`, '#FFAA00', [
             { name: 'Advertido', value: `\`${alvo.user.tag}\``, inline: true },
             { name: 'ID', value: `\`${alvo.id}\``, inline: true },
             { name: 'Por', value: `\`${interaction.user.tag}\``, inline: true },
