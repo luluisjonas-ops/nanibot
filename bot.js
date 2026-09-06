@@ -2,10 +2,17 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const OWNER_ID = process.env.DISCORD_OWNER_ID;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const configuredGroqModel = process.env.GROQ_MODEL?.trim();
-const GROQ_MODEL = configuredGroqModel && configuredGroqModel !== 'llama-3.3-70b-versatile'
+const modelosGroqSemAcessoComum = new Set([
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant'
+]);
+const GROQ_MODEL = configuredGroqModel && !modelosGroqSemAcessoComum.has(configuredGroqModel)
     ? configuredGroqModel
-    : 'llama-3.1-8b-instant';
-const GROQ_FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.1-8b-instant';
+    : 'openai/gpt-oss-20b';
+const configuredGroqFallbackModel = process.env.GROQ_FALLBACK_MODEL?.trim();
+const GROQ_FALLBACK_MODEL = configuredGroqFallbackModel && !modelosGroqSemAcessoComum.has(configuredGroqFallbackModel)
+    ? configuredGroqFallbackModel
+    : 'openai/gpt-oss-120b';
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AuditLogEvent } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
