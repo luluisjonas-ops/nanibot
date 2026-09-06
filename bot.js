@@ -250,6 +250,70 @@ async function consultarGroq(pergunta, model, personalidade = '') {
     return resposta;
 }
 
+async function gerarAnaliseNeuralComIA(guild, relatorio) {
+    if (!GROQ_API_KEY) return null;
+
+    const membros = Object.entries(config.neural?.members || {})
+        .map(([id, dados]) => ({
+            tag: dados.tag,
+            mensagens: dados.messages || 0,
+            mencoesRecebidas: Object.values(dados.mentionedBy || {}).reduce((total, valor) => total + valor, 0),
+            warns: dados.warns || 0,
+            mensagensDeletadas: dados.deletedMsgs || 0
+        }))
+        .sort((a, b) => (b.mensagens + b.mencoesRecebidas) - (a.mensagens + a.mencoesRecebidas))
+        .slice(0, 30);
+
+    const dadosParaIA = {
+        servidor: guild.name,
+        totalMembrosMonitorados: relatorio.total,
+        membrosMaisAtivos: relatorio.topAtivos.map(([, dados]) => ({
+            tag: dados.tag,
+            mensagens: dados.messages || 0
+        })),
+        membrosMaisInfluentes: relatorio.comInfluencia.map(({ tag, mencoes }) => ({ tag, mencoes })),
+        gruposDeInteracao: relatorio.grupos.map(grupo => ({
+            membros: grupo.membros.map(id => config.neural?.members?.[id]?.tag || 'membro desconhecido')
+        })),
+        possiveisPontosDeAtencao: relatorio.conflitos.map(([, dados]) => ({
+            tag: dados.tag,
+            warns: dados.warns || 0,
+            mensagensDeletadas: dados.deletedMsgs || 0
+        })),
+        amostraDeMembros: membros
+    };
+
+    const pergunta = `Analise estes dados estatísticos coletados pelo sistema Neural de um servidor Discord:
+${JSON.stringify(dadosParaIA)}
+
+Gere uma análise objetiva e útil em português brasileiro, usando exatamente estes blocos:
+**Resumo**
+**Padrões da comunidade**
+**Pontos positivos**
+**Pontos de atenção**
+**Recomendações práticas**
+
+Não invente informações que não estejam nos dados. Não acuse ninguém de crime ou má intenção. Trate warns e mensagens deletadas apenas como sinais para acompanhamento, não como prova de culpa. Não exponha IDs; use as tags dos membros quando precisar identificá-los. Seja claro e conciso.`;
+
+    const modelos = [...new Set([GROQ_MODEL, GROQ_FALLBACK_MODEL])];
+    const personalidade = config.personalidades?.[guild.id] || '';
+    let ultimoErro;
+
+    for (const model of modelos) {
+        try {
+            return await consultarGroq(pergunta, model, personalidade);
+        } catch (error) {
+            ultimoErro = error;
+            terminalLog('error', `Erro na análise Neural usando ${model}: ${error.message}`);
+            const podeTentarModeloReserva = [400, 404, 422].includes(error.status) && model !== modelos[modelos.length - 1];
+            if (!podeTentarModeloReserva) break;
+        }
+    }
+
+    if (ultimoErro) terminalLog('warn', `Análise IA do Neural indisponível; relatório estatístico mantido.`);
+    return null;
+}
+
 async function responderMencaoComGroq(message) {
     if (!GROQ_API_KEY) {
         if (!groqMissingKeyLogged) {
@@ -789,8 +853,23 @@ client.on('interactionCreate', async interaction => {
             .setTimestamp()
             .setFooter({ text: 'NaniBot v2.4.1 • Sistema Neural Privado' });
 
+        const analiseIA = await gerarAnaliseNeuralComIA(guild, relatorio);
+        const embeds = [embed];
+        if (analiseIA) {
+            const blocosAnalise = analiseIA.match(/[\s\S]{1,3900}/g) || [];
+            blocosAnalise.slice(0, 8).forEach((bloco, indice) => {
+                embeds.push(
+                    new EmbedBuilder()
+                        .setColor('#2C2A4A')
+                        .setTitle(indice === 0 ? '🤖 Interpretação da IA — Neural' : `🤖 Interpretação da IA — Parte ${indice + 1}`)
+                        .setDescription(bloco)
+                        .setFooter({ text: 'Análise baseada somente nos dados coletados pelo Neural' })
+                );
+            });
+        }
+
         await enviarLog(guild, '🧠 Relatório Neural Gerado', `Dono consultou a análise do servidor.`, '#0D0C1D', [{ name: 'Membros monitorados', value: `\`${total}\``, inline: true }]);
-        return interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds });
     }
 
     if (commandName === 'salvar-servidor') {
