@@ -34,6 +34,7 @@ const client = new Client({
     ]
 });
 
+
 const DATA_FILE = path.join(process.cwd(), 'bot_data.json');
 let config = {
     autoroleId: null,
@@ -43,6 +44,7 @@ let config = {
     warnLimit: 3,
     logsChannelId: null,
     filtroPalavroes: false,
+    personalidades: {},
     neural: { members: {} }
 };
 const proxxySession = new Map();
@@ -51,6 +53,7 @@ const C = { reset: "\x1b[0m", green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[
 
 try { if (fs.existsSync(DATA_FILE)) { const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8')); config = { ...config, ...saved }; } } catch (e) {}
 config.filtroPalavroes = config.filtroPalavroes === true;
+if (!config.personalidades || typeof config.personalidades !== 'object') config.personalidades = {};
 function saveConfig() { try { fs.writeFileSync(DATA_FILE, JSON.stringify(config, null, 4)); } catch(e) {} }
 
 function terminalLog(level, message) {
@@ -204,7 +207,10 @@ function normalizarTexto(texto) {
 
 let groqMissingKeyLogged = false;
 
-async function consultarGroq(pergunta, model) {
+async function consultarGroq(pergunta, model, personalidade = '') {
+    const instrucaoPersonalidade = personalidade
+        ? `\n\nPERSONALIDADE DEFINIDA PELO SERVIDOR:\n${personalidade}\n\nSiga essa personalidade no jeito de falar e agir, mas continue sendo útil, respeitoso e não invente ações que não pode executar.`
+        : '';
     const response = await fetchHttp('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -218,7 +224,7 @@ async function consultarGroq(pergunta, model) {
             messages: [
                 {
                     role: 'system',
-                    content: 'Você é o NaniBot. Responda em português brasileiro, de forma natural, útil e direta. Não use emojis, não invente ações que não pode executar e não diga que é uma IA.'
+                    content: `Você é o NaniBot. Responda em português brasileiro, de forma natural, útil e direta. Não use emojis, não invente ações que não pode executar e não diga que é uma IA.${instrucaoPersonalidade}`
                 },
                 { role: 'user', content: pergunta }
             ]
@@ -258,12 +264,13 @@ async function responderMencaoComGroq(message) {
     try {
         await message.channel.sendTyping();
         const modelos = [...new Set([GROQ_MODEL, GROQ_FALLBACK_MODEL])];
+        const personalidade = config.personalidades?.[message.guild.id] || '';
         let resposta;
         let ultimoErro;
 
         for (const model of modelos) {
             try {
-                resposta = await consultarGroq(pergunta, model);
+                resposta = await consultarGroq(pergunta, model, personalidade);
                 break;
             } catch (error) {
                 ultimoErro = error;
@@ -319,6 +326,7 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('limpar-warns').setDescription('Remove advertências.').addUserOption(o => o.setName('membro').setDescription('Membro').setRequired(true)),
         new SlashCommandBuilder().setName('warn-limite').setDescription('[OWNER] Define limite de warns.').addIntegerOption(o => o.setName('numero').setDescription('Número').setRequired(true).setMinValue(1).setMaxValue(10)),
         new SlashCommandBuilder().setName('filtro-palavroes').setDescription('[OWNER] Liga ou desliga o filtro de palavrões.').addBooleanOption(o => o.setName('ativar').setDescription('Ativar o filtro?').setRequired(true)),
+        new SlashCommandBuilder().setName('personalidade').setDescription('Define como o bot deve agir neste servidor.').addStringOption(o => o.setName('instrucoes').setDescription('Ex.: seja engraçado, direto e use gírias.').setRequired(true).setMaxLength(1000)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa do servidor: panelinhas, influentes, conflitos.'),
         new SlashCommandBuilder().setName('neural-reset').setDescription('[OWNER] Apaga todos os dados coletados pelo sistema Neural.')
     ];
@@ -695,6 +703,24 @@ client.on('interactionCreate', async interaction => {
         if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Apenas o dono pode usar este comando.', ephemeral: true });
         config.warnLimit = options.getInteger('numero'); saveConfig();
         return interaction.reply({ content: `✅ Limite de warns: **${config.warnLimit}**`, ephemeral: true });
+    }
+
+    if (commandName === 'personalidade') {
+        const instrucoes = options.getString('instrucoes', true).trim();
+        if (!config.personalidades) config.personalidades = {};
+
+        if (['limpar', 'resetar', 'remover', 'padrão', 'padrao'].includes(instrucoes.toLowerCase())) {
+            delete config.personalidades[guild.id];
+            saveConfig();
+            return interaction.reply({ content: '✅ Personalidade removida. O bot voltou ao comportamento padrão.', ephemeral: true });
+        }
+
+        config.personalidades[guild.id] = instrucoes;
+        saveConfig();
+        return interaction.reply({
+            content: `✅ Personalidade salva para este servidor:\n> ${instrucoes}`,
+            ephemeral: true
+        });
     }
 
     if (commandName === 'filtro-palavroes') {
