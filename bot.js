@@ -1,5 +1,7 @@
 const TOKEN = process.env.DISCORD_TOKEN;
 const OWNER_ID = process.env.DISCORD_OWNER_ID;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AuditLogEvent } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
@@ -58,13 +60,22 @@ async function enviarDM(titulo, mensagem, cor) {
     } catch (e) {}
 }
 
-async function getOrCreateLogsChannel(guild) {
+async function getOrCreateLogsChannel(guild, createIfMissing = false) {
     if (!OWNER_ID) return null;
 
     if (config.logsChannelId) {
         const ch = guild.channels.cache.get(config.logsChannelId);
         if (ch) return ch;
     }
+
+    const existingChannel = guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name === './/nero-logs');
+    if (existingChannel) {
+        config.logsChannelId = existingChannel.id;
+        saveConfig();
+        return existingChannel;
+    }
+
+    if (!createIfMissing) return null;
 
     try {
         const ch = await guild.channels.create({
@@ -85,7 +96,7 @@ async function getOrCreateLogsChannel(guild) {
 
 async function enviarLog(guild, titulo, descricao, cor, campos) {
     try {
-        const ch = await getOrCreateLogsChannel(guild);
+        const ch = await getOrCreateLogsChannel(guild, false);
         if (!ch) return;
         const embed = new EmbedBuilder().setColor(cor || '#2C2A4A').setTitle(titulo).setDescription(descricao).setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Nero Logs' });
         if (campos) embed.addFields(campos);
@@ -179,6 +190,67 @@ function normalizarTexto(texto) {
         .replace(/[^a-z0-9 ]/g, '');
 }
 
+let groqMissingKeyLogged = false;
+
+async function responderMencaoComGroq(message) {
+    if (!GROQ_API_KEY) {
+        if (!groqMissingKeyLogged) {
+            terminalLog('error', 'GROQ_API_KEY nao configurada; respostas por mencao desativadas.');
+            groqMissingKeyLogged = true;
+        }
+        return;
+    }
+
+    const mentionPattern = new RegExp(`<@!?${client.user.id}>`, 'g');
+    const pergunta = message.content.replace(mentionPattern, '').trim();
+    if (!pergunta) {
+        return message.reply({
+            content: `<@${message.author.id}> fala comigo — me diga o que você precisa.`,
+            allowedMentions: { users: [message.author.id] }
+        });
+    }
+
+    try {
+        await message.channel.sendTyping();
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${GROQ_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: GROQ_MODEL,
+                temperature: 0.7,
+                max_tokens: 700,
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'Você é o NaniBot. Responda em português brasileiro, de forma natural, útil e direta. Não use emojis, não invente ações que não pode executar e não diga que é uma IA.'
+                    },
+                    { role: 'user', content: pergunta }
+                ]
+            })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data?.error?.message || `Groq HTTP ${response.status}`);
+
+        const resposta = data?.choices?.[0]?.message?.content?.trim();
+        if (!resposta) throw new Error('Groq retornou uma resposta vazia.');
+
+        await message.reply({
+            content: `<@${message.author.id}> ${resposta.substring(0, 1900)}`,
+            allowedMentions: { users: [message.author.id] }
+        });
+    } catch (error) {
+        terminalLog('error', `Erro na resposta Groq: ${error.message}`);
+        await message.reply({
+            content: `<@${message.author.id}> não consegui responder agora. Tenta de novo em alguns segundos.`,
+            allowedMentions: { users: [message.author.id] }
+        }).catch(() => {});
+    }
+}
+
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => { res.writeHead(200); res.end('NaniBot online'); }).listen(PORT, () => { terminalLog('info', `HTTP keep-alive na porta ${PORT}`); });
 
@@ -228,31 +300,37 @@ client.on('ready', async () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     trackNeural(message);
-    if (!config.filtroPalavroes) return;
-    const textoNorm = normalizarTexto(message.content);
-    const palavraoEncontrado = PALAVROES.find(p => textoNorm.includes(normalizarTexto(p)));
-    if (!palavraoEncontrado) return;
+    if (config.filtroPalavroes) {
+        const textoNorm = normalizarTexto(message.content);
+        const palavraoEncontrado = PALAVROES.find(p => textoNorm.includes(normalizarTexto(p)));
+        if (palavraoEncontrado) {
+            try { await message.delete(); } catch (e) {}
+            if (config.neural?.members?.[message.author.id]) config.neural.members[message.author.id].deletedMsgs = (config.neural.members[message.author.id].deletedMsgs || 0) + 1;
 
-    try { await message.delete(); } catch (e) {}
-    if (config.neural?.members?.[message.author.id]) config.neural.members[message.author.id].deletedMsgs = (config.neural.members[message.author.id].deletedMsgs || 0) + 1;
+            try {
+                const embed = new EmbedBuilder()
+                    .setColor('#0A0A0A')
+                    .setTitle('⚔️ Violação de Conduta — Sistema Nero')
+                    .setDescription(`${message.author} ativou o sistema de punição automática.\n\n**Canal:** ${message.channel}\n**Infração:** Linguagem proibida\n**Conteúdo:** \`[CENSURADO]\`\n\n*O Nero vê tudo.*`)
+                    .setThumbnail(message.author.displayAvatarURL())
+                    .setTimestamp()
+                    .setFooter({ text: 'NaniBot v2.4.1 • Módulo de Vigilância' });
+                await message.channel.send({ embeds: [embed] });
+            } catch (e) {}
 
-    try {
-        const embed = new EmbedBuilder()
-            .setColor('#0A0A0A')
-            .setTitle('⚔️ Violação de Conduta — Sistema Nero')
-            .setDescription(`${message.author} ativou o sistema de punição automática.\n\n**Canal:** ${message.channel}\n**Infração:** Linguagem proibida\n**Conteúdo:** \`[CENSURADO]\`\n\n*O Nero vê tudo.*`)
-            .setThumbnail(message.author.displayAvatarURL())
-            .setTimestamp()
-            .setFooter({ text: 'NaniBot v2.4.1 • Módulo de Vigilância' });
-        await message.channel.send({ embeds: [embed] });
-    } catch (e) {}
+            await enviarLog(message.guild, '🚫 Xingamento Detectado & Deletado', `Mensagem removida pelo filtro de conduta.`, '#FF4444', [
+                { name: 'Usuário', value: `${message.author} \`${message.author.tag}\``, inline: true },
+                { name: 'ID', value: `\`${message.author.id}\``, inline: true },
+                { name: 'Canal', value: `${message.channel}`, inline: true },
+                { name: 'Conteúdo Original', value: `\`\`\`${message.content.substring(0, 500)}\`\`\`` }
+            ]);
+            return;
+        }
+    }
 
-    await enviarLog(message.guild, '🚫 Xingamento Detectado & Deletado', `Mensagem removida pelo filtro de conduta.`, '#FF4444', [
-        { name: 'Usuário', value: `${message.author} \`${message.author.tag}\``, inline: true },
-        { name: 'ID', value: `\`${message.author.id}\``, inline: true },
-        { name: 'Canal', value: `${message.channel}`, inline: true },
-        { name: 'Conteúdo Original', value: `\`\`\`${message.content.substring(0, 500)}\`\`\`` }
-    ]);
+    if (client.user && message.mentions.users.has(client.user.id)) {
+        await responderMencaoComGroq(message);
+    }
 });
 
 client.on('guildMemberAdd', async (member) => {
@@ -409,7 +487,7 @@ client.on('interactionCreate', async interaction => {
         if (!isOwner(interaction.user.id)) return interaction.reply({ content: '⛔ Apenas o dono pode usar este comando.', ephemeral: true });
         await interaction.deferReply({ ephemeral: true });
         config.logsChannelId = null; saveConfig();
-        const ch = await getOrCreateLogsChannel(guild);
+        const ch = await getOrCreateLogsChannel(guild, true);
         if (!ch) return interaction.editReply({ content: 'Erro ao criar canal de logs.' });
         await ch.send({ embeds: [new EmbedBuilder().setColor('#2C2A4A').setTitle('📊 Sistema de Logs Ativo').setDescription('Este canal registra tudo que acontece no servidor.\n\nSomente o dono (por ID) consegue ver este canal.').setTimestamp().setFooter({ text: 'NaniBot v2.4.1 • Nero Logs' })] });
         return interaction.editReply({ content: `✅ Canal de logs criado: ${ch}` });
@@ -749,7 +827,7 @@ client.on('interactionCreate', async interaction => {
         await guild.channels.create({ name: '💎 VIP Lounge', type: ChannelType.GuildVoice, parent: catVip.id, permissionOverwrites: overwritesVip });
 
         config.logsChannelId = null; saveConfig();
-        const logsChannel = await getOrCreateLogsChannel(guild);
+        const logsChannel = await getOrCreateLogsChannel(guild, true);
 
         const embedPortaria = new EmbedBuilder().setColor('#0A0A0A').setTitle('✦ GATEWAY INTEGRITY').setDescription('Para acessar os diretórios protegidos, clique no botão abaixo.\n\n*A aprovação passará pela triagem dos moderadores.*');
         await canalVerificar.send({ embeds: [embedPortaria], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('solicitar_verificacao').setLabel('✦ Request Access').setStyle(ButtonStyle.Secondary))] });
