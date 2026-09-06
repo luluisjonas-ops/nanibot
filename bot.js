@@ -1,7 +1,11 @@
 const TOKEN = process.env.DISCORD_TOKEN;
 const OWNER_ID = process.env.DISCORD_OWNER_ID;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const configuredGroqModel = process.env.GROQ_MODEL?.trim();
+const GROQ_MODEL = configuredGroqModel && configuredGroqModel !== 'llama-3.3-70b-versatile'
+    ? configuredGroqModel
+    : 'llama-3.1-8b-instant';
+const GROQ_FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.1-8b-instant';
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AuditLogEvent } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
@@ -9,6 +13,7 @@ const backup = require('discord-backup');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const fetchHttp = globalThis.fetch ? globalThis.fetch.bind(globalThis) : require('node-fetch');
 
 const client = new Client({
     intents: [
@@ -192,6 +197,39 @@ function normalizarTexto(texto) {
 
 let groqMissingKeyLogged = false;
 
+async function consultarGroq(pergunta, model) {
+    const response = await fetchHttp('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${GROQ_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            model,
+            temperature: 0.7,
+            max_tokens: 700,
+            messages: [
+                {
+                    role: 'system',
+                    content: 'Você é o NaniBot. Responda em português brasileiro, de forma natural, útil e direta. Não use emojis, não invente ações que não pode executar e não diga que é uma IA.'
+                },
+                { role: 'user', content: pergunta }
+            ]
+        })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const error = new Error(data?.error?.message || `Groq HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
+
+    const resposta = data?.choices?.[0]?.message?.content?.trim();
+    if (!resposta) throw new Error('Groq retornou uma resposta vazia.');
+    return resposta;
+}
+
 async function responderMencaoComGroq(message) {
     if (!GROQ_API_KEY) {
         if (!groqMissingKeyLogged) {
@@ -212,31 +250,24 @@ async function responderMencaoComGroq(message) {
 
     try {
         await message.channel.sendTyping();
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${GROQ_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: GROQ_MODEL,
-                temperature: 0.7,
-                max_tokens: 700,
-                messages: [
-                    {
-                        role: 'system',
-                        content: 'Você é o NaniBot. Responda em português brasileiro, de forma natural, útil e direta. Não use emojis, não invente ações que não pode executar e não diga que é uma IA.'
-                    },
-                    { role: 'user', content: pergunta }
-                ]
-            })
-        });
+        const modelos = [...new Set([GROQ_MODEL, GROQ_FALLBACK_MODEL])];
+        let resposta;
+        let ultimoErro;
 
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data?.error?.message || `Groq HTTP ${response.status}`);
+        for (const model of modelos) {
+            try {
+                resposta = await consultarGroq(pergunta, model);
+                break;
+            } catch (error) {
+                ultimoErro = error;
+                terminalLog('error', `Erro na resposta Groq usando ${model}: ${error.message}`);
+                const podeTentarModeloReserva = [400, 404, 422].includes(error.status) && model !== modelos[modelos.length - 1];
+                if (!podeTentarModeloReserva) throw error;
+                terminalLog('warn', `Modelo ${model} recusado; tentando ${GROQ_FALLBACK_MODEL}.`);
+            }
+        }
 
-        const resposta = data?.choices?.[0]?.message?.content?.trim();
-        if (!resposta) throw new Error('Groq retornou uma resposta vazia.');
+        if (!resposta) throw ultimoErro || new Error('Groq não retornou resposta.');
 
         await message.reply({
             content: `<@${message.author.id}> ${resposta.substring(0, 1900)}`,
