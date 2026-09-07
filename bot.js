@@ -24,7 +24,6 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const fetchHttp = globalThis.fetch ? globalThis.fetch.bind(globalThis) : require('node-fetch');
-const fetchTts = require('node-fetch');
 
 const client = new Client({
     intents: [
@@ -447,6 +446,34 @@ function dividirTextoParaTts(texto, limite = 180) {
     return partes;
 }
 
+function baixarAudioTtsComCurl(url, arquivo) {
+    return new Promise((resolve, reject) => {
+        const processo = spawn('curl', [
+            '--location',
+            '--fail',
+            '--silent',
+            '--show-error',
+            '--max-time', '20',
+            '--retry', '2',
+            '--retry-delay', '1',
+            '-A', 'Mozilla/5.0',
+            '-o', arquivo,
+            url
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let erro = '';
+
+        processo.stderr.on('data', dados => { erro += dados.toString(); });
+        processo.on('error', error => reject(error));
+        processo.on('close', codigo => {
+            if (codigo !== 0) {
+                reject(new Error(erro.trim() || `curl encerrou com código ${codigo}.`));
+                return;
+            }
+            resolve();
+        });
+    });
+}
+
 async function sintetizarVozGoogle(texto) {
     const pastaTemporaria = fs.mkdtempSync(path.join(os.tmpdir(), 'nanibot-tts-'));
     const arquivos = [];
@@ -459,27 +486,24 @@ async function sintetizarVozGoogle(texto) {
             url.searchParams.set('tl', 'pt-BR');
             url.searchParams.set('q', parte);
 
-            let audio;
+            const arquivo = path.join(pastaTemporaria, `${indice}.mp3`);
             let ultimoErro;
             for (let tentativa = 1; tentativa <= 3; tentativa++) {
                 try {
-                    const resposta = await fetchTts(url.toString(), {
-                        headers: { 'User-Agent': 'Mozilla/5.0' },
-                        timeout: 20_000
-                    });
-                    if (!resposta.ok) throw new Error(`TTS online retornou HTTP ${resposta.status}.`);
-                    audio = await resposta.buffer();
-                    if (!audio?.length) throw new Error('TTS online retornou áudio vazio.');
+                    fs.rmSync(arquivo, { force: true });
+                    await baixarAudioTtsComCurl(url.toString(), arquivo);
+                    if (!fs.existsSync(arquivo) || fs.statSync(arquivo).size === 0) throw new Error('TTS online retornou áudio vazio.');
                     break;
                 } catch (error) {
                     ultimoErro = error;
+                    fs.rmSync(arquivo, { force: true });
                     if (tentativa < 3) await new Promise(resolve => setTimeout(resolve, 600 * tentativa));
                 }
             }
-            if (!audio) throw new Error(`TTS online falhou após 3 tentativas: ${ultimoErro?.message || 'erro desconhecido'}`);
+            if (!fs.existsSync(arquivo) || fs.statSync(arquivo).size === 0) {
+                throw new Error(`TTS online falhou após 3 tentativas: ${ultimoErro?.message || 'erro desconhecido'}`);
+            }
 
-            const arquivo = path.join(pastaTemporaria, `${indice}.mp3`);
-            fs.writeFileSync(arquivo, audio);
             arquivos.push(arquivo);
         }
 
@@ -1070,8 +1094,20 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            const audio = await sintetizarVozRobotica(mensagem);
-            const player = await conectarNaCall(guild, canal);
+            let audio;
+            try {
+                audio = await sintetizarVozRobotica(mensagem);
+            } catch (error) {
+                throw new Error(`TTS: ${error.message}`);
+            }
+
+            let player;
+            try {
+                player = await conectarNaCall(guild, canal);
+            } catch (error) {
+                throw new Error(`call: ${error.message}`);
+            }
+
             const posicao = colocarNaFilaDeVoz(guild.id, player, audio);
             const filaAviso = posicao > 1 ? ` Fiquei na fila em **${posicao}º lugar**.` : '';
             return interaction.editReply({
