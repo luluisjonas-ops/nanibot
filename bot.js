@@ -532,6 +532,50 @@ function nomesDasPermissoes(bits) {
     return nomes.length ? nomes.join(', ') : 'Sem permissões especiais';
 }
 
+function pedidoPareceOperacional(pedido) {
+    return /\b(cria|criar|crie|faz|faca|faça|dar|d[aá]|remove|remover|apaga|apagar|banir|bane|expulsa|expulsar|silencia|silenciar|timeout|cargo|cargo[s]?|backup|limpa|limpar|ativa|ativar|desativa|desativar)\b/i.test(String(pedido || ''));
+}
+
+function planoDiretoDeCriarCargo(pedido) {
+    const texto = String(pedido || '').replace(/<@!?\d+>/g, '').replace(/\s+/g, ' ').trim();
+    const match = texto.match(/^(?:por favor\s+)?(?:cria|criar|crie|faz|faca|faça)\s+(?:um\s+)?cargo\s+(.+)$/i);
+    if (!match) return null;
+
+    let resto = match[1].trim().replace(/^["'`]|["'`]$/g, '');
+    const separacao = resto.match(/^(.+?)\s+(?:com|para)\s+(.+)$/i);
+    const nome = (separacao ? separacao[1] : resto).trim().replace(/^["'`]|["'`]$/g, '');
+    const descricaoPermissoes = separacao?.[2]?.trim() || '';
+    if (!nome || nome.length > 100) return null;
+
+    const normalizado = normalizarTexto(descricaoPermissoes);
+    const parametros = { nome };
+    const cor = descricaoPermissoes.match(/#[0-9a-f]{6}/i);
+    if (cor) parametros.cor = cor[0];
+
+    if (/(?:owner|dono|proprietario|administrador total|todas as permissoes)/i.test(normalizado)) {
+        parametros.preset = 'owner';
+    } else if (/(?:administrador basico|admin basico|comandos basicos)/i.test(normalizado)) {
+        parametros.preset = 'admin_basico';
+    } else if (/\bmoderador\b/i.test(normalizado)) {
+        parametros.preset = 'moderador';
+    } else if (/\bsuporte\b/i.test(normalizado)) {
+        parametros.preset = 'suporte';
+    } else if (descricaoPermissoes) {
+        parametros.permissoes = descricaoPermissoes
+            .replace(/^com\s+/i, '')
+            .split(/\s+e\s+|[,;|]/i)
+            .map(item => item.trim())
+            .filter(Boolean);
+    }
+
+    return {
+        resposta: `Vou criar o cargo **${nome}**${descricaoPermissoes ? ` com ${descricaoPermissoes}` : ''}.`,
+        acao: 'create_role',
+        parametros,
+        confirmacaoNecessaria: true
+    };
+}
+
 function idPendenteIA() {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -560,6 +604,7 @@ async function executarAcaoIA({ guild, ator, canal, plano }) {
     if (!acoesIAMutaveis.has(acao)) {
         return plano.resposta || 'Posso conversar e ajudar, mas não identifiquei uma ação executável.';
     }
+    terminalLog('info', `IA executando ação: ${acao} no servidor ${guild.name}.`);
 
     if (acao === 'create_role') {
         if (!operadorPode(ator, PermissionFlagsBits.ManageRoles)) return '⛔ Você precisa da permissão **Gerenciar Cargos**.';
@@ -579,6 +624,8 @@ async function executarAcaoIA({ guild, ator, canal, plano }) {
             hoist: p.exibir_separado === true,
             reason: `Criado pela IA a pedido de ${ator.user.tag}`
         });
+        const cargoConfirmado = await guild.roles.fetch(cargo.id).catch(() => null);
+        if (!cargoConfirmado) throw new Error('O Discord não confirmou a criação do cargo.');
         await enviarLog(guild, '🎭 Cargo Criado pela IA', `Cargo **${cargo.name}** criado.`, '#5865F2', [
             { name: 'Criado por', value: `\`${ator.user.tag}\`` }
         ]);
@@ -787,8 +834,12 @@ async function executarAcaoIA({ guild, ator, canal, plano }) {
 }
 
 async function processarPedidoIA({ guild, ator, canal, pedido }) {
-    const plano = await consultarGroqParaAcao(guild, pedido, ator);
+    const planoDireto = planoDiretoDeCriarCargo(pedido);
+    const plano = planoDireto || await consultarGroqParaAcao(guild, pedido, ator);
     if (plano.acao === 'none') {
+        if (pedidoPareceOperacional(pedido)) {
+            return { content: '⚠️ Entendi que você quer executar uma ação, mas não consegui identificar os detalhes. Diga o nome exato do cargo, membro ou canal.' };
+        }
         return { content: await consultarGroq(pedido, GROQ_MODEL, config.personalidades?.[guild.id] || '') };
     }
     if (!acoesIAMutaveis.has(plano.acao)) {
@@ -1197,6 +1248,13 @@ async function responderMencaoComGroq(message) {
             return;
         } catch (error) {
             terminalLog('warn', `IA operacional indisponível; usando resposta comum: ${error.message}`);
+            if (pedidoPareceOperacional(pergunta)) {
+                await message.reply({
+                    content: `<@${message.author.id}> ❌ Não consegui executar a ação: ${error.message}`,
+                    allowedMentions: { users: [message.author.id] }
+                });
+                return;
+            }
         }
 
         const modelos = [...new Set([GROQ_MODEL, GROQ_FALLBACK_MODEL])];
