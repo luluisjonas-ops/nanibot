@@ -15,11 +15,13 @@ const GROQ_FALLBACK_MODEL = configuredGroqFallbackModel && !modelosGroqSemAcesso
     : 'openai/gpt-oss-120b';
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AuditLogEvent } = require('discord.js');
-const { joinVoiceChannel } = require('@discordjs/voice');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
 const backup = require('discord-backup');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { spawn } = require('child_process');
+const { Readable } = require('stream');
 const fetchHttp = globalThis.fetch ? globalThis.fetch.bind(globalThis) : require('node-fetch');
 
 const client = new Client({
@@ -48,6 +50,8 @@ let config = {
     neural: { members: {} }
 };
 const proxxySession = new Map();
+const conexoesDeVoz = new Map();
+const playersDeVoz = new Map();
 
 const C = { reset: "\x1b[0m", green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m" };
 
@@ -314,6 +318,121 @@ Não invente informações que não estejam nos dados. Não acuse ninguém de cr
     return null;
 }
 
+function sintetizarVozRobotica(texto) {
+    return new Promise((resolve, reject) => {
+        const tts = spawn('espeak-ng', [
+            '-v', 'pt-br',
+            '-s', '150',
+            '-p', '28',
+            '-a', '160',
+            '--stdout',
+            texto
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const ffmpeg = spawn('ffmpeg', [
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-i', 'pipe:0',
+            '-vn',
+            '-ac', '2',
+            '-ar', '48000',
+            '-c:a', 'libopus',
+            '-b:a', '64k',
+            '-application', 'voip',
+            '-frame_duration', '20',
+            '-f', 'ogg',
+            'pipe:1'
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+        const partes = [];
+        let erroTts = '';
+        let finalizado = false;
+        const terminarComErro = (erro) => {
+            if (finalizado) return;
+            finalizado = true;
+            tts.kill('SIGKILL');
+            ffmpeg.kill('SIGKILL');
+            reject(erro instanceof Error ? erro : new Error(String(erro)));
+        };
+
+        tts.stderr.on('data', dados => { erroTts += dados.toString(); });
+        ffmpeg.stdout.on('data', dados => partes.push(dados));
+        tts.stdout.pipe(ffmpeg.stdin);
+        ffmpeg.stdin.on('error', () => {});
+        tts.on('error', erro => terminarComErro(new Error(`Sintetizador de voz indisponível: ${erro.message}`)));
+        ffmpeg.on('error', erro => terminarComErro(new Error(`Conversor de áudio indisponível: ${erro.message}`)));
+        tts.on('close', codigo => {
+            if (codigo !== 0) {
+                terminarComErro(new Error(erroTts.trim() || `Falha no sintetizador de voz (${codigo}).`));
+            }
+        });
+        ffmpeg.on('close', codigo => {
+            if (finalizado) return;
+            finalizado = true;
+            if (codigo !== 0 || partes.length === 0) {
+                reject(new Error('Não foi possível converter a fala para o formato do Discord.'));
+                return;
+            }
+            resolve(Buffer.concat(partes));
+        });
+    });
+}
+
+function iniciarPlayerDeVoz(guildId) {
+    const existente = playersDeVoz.get(guildId);
+    if (existente) return existente;
+
+    const player = createAudioPlayer();
+    const avancarFila = () => {
+        const fila = filasDeFala.get(guildId);
+        if (!fila || fila.length === 0) {
+            filasDeFala.delete(guildId);
+            return;
+        }
+        fila.shift();
+        if (fila[0]) player.play(fila[0]);
+        else filasDeFala.delete(guildId);
+    };
+
+    player.on(AudioPlayerStatus.Idle, avancarFila);
+    player.on('error', erro => {
+        terminalLog('error', `Erro no áudio da call: ${erro.message}`);
+        avancarFila();
+    });
+    playersDeVoz.set(guildId, player);
+    return player;
+}
+
+async function conectarNaCall(guild, canal) {
+    const permissao = canal.permissionsFor(guild.members.me);
+    if (!permissao?.has(PermissionFlagsBits.Connect) || !permissao.has(PermissionFlagsBits.Speak)) {
+        throw new Error('Preciso das permissões **Conectar** e **Falar** nesse canal.');
+    }
+
+    const conexao = joinVoiceChannel({
+        channelId: canal.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: false
+    });
+    conexoesDeVoz.set(guild.id, conexao);
+    await entersState(conexao, VoiceConnectionStatus.Ready, 15_000);
+    const player = iniciarPlayerDeVoz(guild.id);
+    conexao.subscribe(player);
+    return player;
+}
+
+const filasDeFala = new Map();
+
+function colocarNaFilaDeVoz(guildId, player, audio) {
+    const fila = filasDeFala.get(guildId) || [];
+    const recurso = createAudioResource(Readable.from(audio), { inputType: StreamType.OggOpus });
+    fila.push(recurso);
+    filasDeFala.set(guildId, fila);
+    if (fila.length === 1) player.play(recurso);
+    return fila.length;
+}
+
 async function responderMencaoComGroq(message) {
     if (!GROQ_API_KEY) {
         if (!groqMissingKeyLogged) {
@@ -398,6 +517,7 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('warn-limite').setDescription('[OWNER] Define limite de warns.').addIntegerOption(o => o.setName('numero').setDescription('Número').setRequired(true).setMinValue(1).setMaxValue(10)),
         new SlashCommandBuilder().setName('filtro-palavroes').setDescription('[OWNER] Liga ou desliga o filtro de palavrões.').addBooleanOption(o => o.setName('ativar').setDescription('Ativar o filtro?').setRequired(true)),
         new SlashCommandBuilder().setName('personalidade').setDescription('Define como o bot deve agir neste servidor.').addStringOption(o => o.setName('instrucoes').setDescription('Ex.: seja engraçado, direto e use gírias.').setRequired(true).setMaxLength(1000)),
+        new SlashCommandBuilder().setName('falar').setDescription('Entra na sua call e fala uma mensagem com voz robótica.').addStringOption(o => o.setName('mensagem').setDescription('O que o bot deve falar').setRequired(true).setMaxLength(500)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa do servidor: panelinhas, influentes, conflitos.'),
         new SlashCommandBuilder().setName('neural-reset').setDescription('[OWNER] Apaga todos os dados coletados pelo sistema Neural.')
     ];
@@ -407,7 +527,14 @@ client.on('ready', async () => {
         await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
         const guildPromises = [];
         client.guilds.cache.forEach(guild => {
-            guildPromises.push(rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands }).catch(() => {}));
+            guildPromises.push(
+                rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands })
+                    .then(() => terminalLog('info', `Comandos sincronizados no servidor ${guild.id}: ${commands.length}.`))
+                    .catch(error => {
+                        terminalLog('error', `Falha ao sincronizar comandos no servidor ${guild.id}: ${error.message}`);
+                        throw error;
+                    })
+            );
         });
         await Promise.all(guildPromises);
         terminalLog('success', 'Comandos registrados!');
@@ -804,6 +931,30 @@ client.on('interactionCreate', async interaction => {
                 : '✅ Filtro de palavrões **desativado** e salvo.',
             ephemeral: true
         });
+    }
+
+    if (commandName === 'falar') {
+        const canal = interaction.member?.voice?.channel;
+        if (!canal) return interaction.reply({ content: '🔊 Entre em um canal de voz primeiro. Eu entro na mesma call que você.', ephemeral: true });
+
+        const mensagem = options.getString('mensagem', true).replace(/\s+/g, ' ').trim();
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+            const audio = await sintetizarVozRobotica(mensagem);
+            const player = await conectarNaCall(guild, canal);
+            const posicao = colocarNaFilaDeVoz(guild.id, player, audio);
+            const filaAviso = posicao > 1 ? ` Fiquei na fila em **${posicao}º lugar**.` : '';
+            return interaction.editReply({
+                content: `🔊 Entrei em **${canal.name}** e vou falar:\n> ${mensagem}${filaAviso}`,
+                allowedMentions: { parse: [] }
+            });
+        } catch (error) {
+            terminalLog('error', `Falha no comando /falar: ${error.message}`);
+            return interaction.editReply({
+                content: `❌ Não consegui falar na call: ${error.message}`
+            });
+        }
     }
 
     if (commandName === 'neural-reset') {
