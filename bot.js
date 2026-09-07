@@ -561,15 +561,46 @@ async function conectarNaCall(guild, canal) {
         throw new Error('Preciso das permissões **Conectar** e **Falar** nesse canal.');
     }
 
+    const conexaoExistente = conexoesDeVoz.get(guild.id);
+    if (conexaoExistente && conexaoExistente.state.status !== VoiceConnectionStatus.Destroyed) {
+        terminalLog('info', `Conexão de voz existente: ${conexaoExistente.state.status}.`);
+        try {
+            if (conexaoExistente.state.status !== VoiceConnectionStatus.Ready) {
+                await entersState(conexaoExistente, VoiceConnectionStatus.Ready, 30_000);
+            }
+            const player = iniciarPlayerDeVoz(guild.id);
+            conexaoExistente.subscribe(player);
+            return player;
+        } catch (error) {
+            conexaoExistente.destroy();
+            conexoesDeVoz.delete(guild.id);
+            throw new Error(`Conexão existente não ficou pronta (${conexaoExistente.state.status}): ${error.message}`);
+        }
+    }
+
     const conexao = joinVoiceChannel({
         channelId: canal.id,
         guildId: guild.id,
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
-        selfMute: false
+        selfMute: false,
+        debug: true
+    });
+    conexao.on('stateChange', (oldState, newState) => {
+        terminalLog('info', `Gateway de voz: ${oldState.status} -> ${newState.status}.`);
+    });
+    conexao.on('error', error => {
+        terminalLog('error', `Gateway de voz reportou: ${error.message}`);
     });
     conexoesDeVoz.set(guild.id, conexao);
-    await entersState(conexao, VoiceConnectionStatus.Ready, 15_000);
+    try {
+        await entersState(conexao, VoiceConnectionStatus.Ready, 30_000);
+    } catch (error) {
+        const estado = conexao.state.status;
+        conexao.destroy();
+        conexoesDeVoz.delete(guild.id);
+        throw new Error(`Gateway de voz não ficou pronto (estado ${estado}): ${error.message}`);
+    }
     const player = iniciarPlayerDeVoz(guild.id);
     conexao.subscribe(player);
     return player;
