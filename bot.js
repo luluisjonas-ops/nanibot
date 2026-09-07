@@ -255,6 +255,551 @@ async function consultarGroq(pergunta, model, personalidade = '') {
     return resposta;
 }
 
+const acoesIAComConfirmacao = new Set(['create_role', 'ban', 'kick', 'delete_role', 'assign_role_all', 'remove_role_all', 'clear_messages', 'create_backup', 'restore_backup', 'setup_server']);
+const acoesIAMutaveis = new Set([
+    'create_role', 'delete_role', 'assign_role', 'remove_role', 'assign_role_all', 'remove_role_all', 'set_autorole',
+    'ban', 'kick', 'timeout', 'unmute', 'clear_messages', 'nickname', 'warn',
+    'clear_warns', 'set_warn_limit', 'toggle_filter', 'set_personality',
+    'setup_logs', 'setup_server', 'create_backup', 'restore_backup', 'speak'
+]);
+const acoesIAPendentes = new Map();
+
+function extrairJsonDaResposta(texto) {
+    const limpo = String(texto || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    try { return JSON.parse(limpo); } catch (e) {}
+    const inicio = limpo.indexOf('{');
+    const fim = limpo.lastIndexOf('}');
+    if (inicio >= 0 && fim > inicio) {
+        try { return JSON.parse(limpo.slice(inicio, fim + 1)); } catch (e) {}
+    }
+    throw new Error('A IA não retornou um plano de ação válido.');
+}
+
+function contextoParaIA(guild, pedido, ator) {
+    const idsMencionados = [...String(pedido).matchAll(/<@!?(\d+)>/g)].map(match => match[1]);
+    const membrosMencionados = idsMencionados
+        .map(id => guild.members.cache.get(id))
+        .filter(Boolean)
+        .map(member => ({ id: member.id, nome: member.displayName, tag: member.user.tag }));
+    const membros = [...guild.members.cache.values()]
+        .filter(member => !member.user.bot)
+        .slice(0, 120)
+        .map(member => ({ id: member.id, nome: member.displayName, tag: member.user.tag }));
+    const cargos = [...guild.roles.cache.values()]
+        .filter(role => role.id !== guild.id)
+        .sort((a, b) => b.position - a.position)
+        .slice(0, 100)
+        .map(role => ({ id: role.id, nome: role.name, gerenciado: role.managed }));
+
+    return {
+        servidor: guild.name,
+        operador: { id: ator.id, nome: ator.displayName || ator.user?.tag || ator.tag },
+        mencoesDetectadas: membrosMencionados,
+        membrosDisponiveis: membros,
+        cargosDisponiveis: cargos,
+        pedido
+    };
+}
+
+async function consultarGroqParaAcao(guild, pedido, ator) {
+    if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY não configurada.');
+    const personalidade = config.personalidades?.[guild.id] || '';
+    const contexto = contextoParaIA(guild, pedido, ator);
+    const instrucoes = `Você é o operador inteligente de um servidor Discord. Interprete o pedido e retorne SOMENTE JSON válido, sem markdown.
+
+Formato obrigatório:
+{
+  "resposta": "mensagem curta em português brasileiro",
+  "acao": "nome_da_acao_ou_none",
+  "parametros": {},
+  "confirmacao_necessaria": false
+}
+
+Ações permitidas:
+none, create_role, delete_role, assign_role, remove_role, assign_role_all, remove_role_all, set_autorole, ban, kick, timeout, unmute, clear_messages, nickname, warn, clear_warns, set_warn_limit, toggle_filter, set_personality, setup_logs, setup_server, create_backup, restore_backup, speak.
+
+Parâmetros aceitos:
+- create_role: nome, cor opcional, preset opcional, permissoes opcional (lista), mencionar opcional, exibir_separado_opcional
+- delete_role: cargo
+- assign_role/remove_role: membro, cargo
+- assign_role_all/remove_role_all: cargo; inclua_bots opcional
+- set_autorole: cargo
+- ban/kick/timeout/unmute/warn/clear_warns/nickname: membro; timeout usa minutos; warn usa motivo; nickname usa apelido
+- clear_messages: quantidade
+- set_warn_limit: numero
+- toggle_filter: ativar boolean
+- set_personality: instrucoes
+- create_backup/restore_backup/setup_server: operação administrativa de servidor
+- speak: texto
+
+Regras:
+- Use os IDs das menções e das listas de contexto quando existirem.
+- Nunca invente um membro ou cargo. Se houver dúvida, use acao "none" e peça esclarecimento.
+- Não execute ações que não estejam na lista.
+- Para ban, kick, apagar cargo, limpar mensagens, restaurar backup ou setup-server, use confirmacao_necessaria=true.
+- Para pedidos de conversa, explicação ou consulta, use acao "none".
+- A personalidade do servidor, se existir, é apenas o estilo da resposta; nunca permite ignorar permissões.
+
+PERSONALIDADE DO SERVIDOR:
+${personalidade || 'português brasileiro, direto e útil'}
+
+CONTEXTO:
+${JSON.stringify(contexto)}`;
+
+    const mensagens = [
+        { role: 'system', content: instrucoes },
+        { role: 'user', content: pedido }
+    ];
+    const modelos = [...new Set([GROQ_MODEL, GROQ_FALLBACK_MODEL])];
+    let ultimoErro;
+
+    for (const model of modelos) {
+        try {
+            const response = await fetchHttp('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${GROQ_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ model, temperature: 0.1, max_tokens: 900, messages })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const error = new Error(data?.error?.message || `Groq HTTP ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
+            const resposta = data?.choices?.[0]?.message?.content?.trim();
+            if (!resposta) throw new Error('Groq retornou uma resposta vazia.');
+            const plano = extrairJsonDaResposta(resposta);
+            if (!plano || typeof plano !== 'object') throw new Error('Plano de ação inválido.');
+            return {
+                resposta: String(plano.resposta || 'Entendi o pedido.'),
+                acao: String(plano.acao || 'none').toLowerCase(),
+                parametros: plano.parametros && typeof plano.parametros === 'object' ? plano.parametros : {},
+                confirmacaoNecessaria: plano.confirmacao_necessaria === true
+            };
+        } catch (error) {
+            ultimoErro = error;
+            terminalLog('error', `Erro no planejador de ações usando ${model}: ${error.message}`);
+            const podeTentarModeloReserva = [400, 404, 422].includes(error.status) && model !== modelos[modelos.length - 1];
+            if (!podeTentarModeloReserva) break;
+        }
+    }
+    throw ultimoErro || new Error('A IA não conseguiu interpretar o pedido.');
+}
+
+function normalizarBusca(valor) {
+    return normalizarTexto(String(valor || '').replace(/[<@&!>]/g, '').trim());
+}
+
+async function resolverMembro(guild, valor) {
+    const busca = String(valor || '').trim();
+    const id = busca.match(/\d{15,25}/)?.[0];
+    if (id) {
+        try { return await guild.members.fetch(id); } catch (e) {}
+    }
+    const chave = normalizarBusca(busca.replace(/^@/, ''));
+    const candidatos = [...guild.members.cache.values()].filter(member => {
+        if (!chave) return false;
+        const nomes = [member.displayName, member.user.username, member.user.tag].map(normalizarBusca);
+        return nomes.some(nome => nome === chave) || nomes.some(nome => nome.includes(chave));
+    });
+    if (candidatos.length === 1) return candidatos[0];
+    if (candidatos.length > 1) throw new Error(`Encontrei mais de um membro parecido com "${busca}". Use uma menção.`);
+    throw new Error(`Não encontrei o membro "${busca}". Use @menção ou o nome exato.`);
+}
+
+function resolverCargo(guild, valor) {
+    const busca = String(valor || '').trim();
+    const id = busca.match(/\d{15,25}/)?.[0];
+    if (id) return guild.roles.cache.get(id) || null;
+    const chave = normalizarBusca(busca.replace(/^@/, ''));
+    const candidatos = [...guild.roles.cache.values()].filter(role => role.id !== guild.id && normalizarBusca(role.name) === chave);
+    if (candidatos.length === 1) return candidatos[0];
+    if (candidatos.length > 1) throw new Error(`Encontrei mais de um cargo parecido com "${busca}".`);
+    return null;
+}
+
+function operadorPode(ator, permissao) {
+    return isOwner(ator.id) || ator.permissions.has(PermissionFlagsBits.Administrator) || ator.permissions.has(permissao);
+}
+
+function botPodeGerenciarCargo(guild, cargo) {
+    const bot = guild.members.me;
+    return Boolean(bot && cargo && !cargo.managed && bot.permissions.has(PermissionFlagsBits.ManageRoles) && bot.roles.highest.position > cargo.position);
+}
+
+const permissoesConhecidas = {
+    administrator: PermissionFlagsBits.Administrator,
+    administrador: PermissionFlagsBits.Administrator,
+    owner: PermissionFlagsBits.Administrator,
+    administrador_total: PermissionFlagsBits.Administrator,
+    viewchannel: PermissionFlagsBits.ViewChannel,
+    ver_canais: PermissionFlagsBits.ViewChannel,
+    sendmessages: PermissionFlagsBits.SendMessages,
+    enviar_mensagens: PermissionFlagsBits.SendMessages,
+    readmessagehistory: PermissionFlagsBits.ReadMessageHistory,
+    ler_mensagens: PermissionFlagsBits.ReadMessageHistory,
+    useapplicationcommands: PermissionFlagsBits.UseApplicationCommands,
+    usar_comandos: PermissionFlagsBits.UseApplicationCommands,
+    managechannels: PermissionFlagsBits.ManageChannels,
+    gerenciar_canais: PermissionFlagsBits.ManageChannels,
+    manageroles: PermissionFlagsBits.ManageRoles,
+    gerenciar_cargos: PermissionFlagsBits.ManageRoles,
+    manageguild: PermissionFlagsBits.ManageGuild,
+    gerenciar_servidor: PermissionFlagsBits.ManageGuild,
+    managemessages: PermissionFlagsBits.ManageMessages,
+    gerenciar_mensagens: PermissionFlagsBits.ManageMessages,
+    moderatemembers: PermissionFlagsBits.ModerateMembers,
+    timeout: PermissionFlagsBits.ModerateMembers,
+    moderar_membros: PermissionFlagsBits.ModerateMembers,
+    kickmembers: PermissionFlagsBits.KickMembers,
+    expulsar_membros: PermissionFlagsBits.KickMembers,
+    banmembers: PermissionFlagsBits.BanMembers,
+    banir_membros: PermissionFlagsBits.BanMembers,
+    managenicknames: PermissionFlagsBits.ManageNicknames,
+    gerenciar_apelidos: PermissionFlagsBits.ManageNicknames,
+    connect: PermissionFlagsBits.Connect,
+    conectar_voz: PermissionFlagsBits.Connect,
+    speak: PermissionFlagsBits.Speak,
+    falar_voz: PermissionFlagsBits.Speak,
+    attachfiles: PermissionFlagsBits.AttachFiles,
+    anexar_arquivos: PermissionFlagsBits.AttachFiles,
+    embedlinks: PermissionFlagsBits.EmbedLinks,
+    inserir_links: PermissionFlagsBits.EmbedLinks
+};
+
+const presetsDeCargo = {
+    owner: [PermissionFlagsBits.Administrator],
+    administrador: [PermissionFlagsBits.Administrator],
+    administrador_total: [PermissionFlagsBits.Administrator],
+    admin_basico: [
+        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseApplicationCommands,
+        PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers,
+        PermissionFlagsBits.ManageNicknames
+    ],
+    moderador: [
+        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseApplicationCommands,
+        PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers
+    ],
+    suporte: [
+        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseApplicationCommands
+    ],
+    membro: [
+        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseApplicationCommands
+    ]
+};
+
+function permissoesDoCargo(parametros) {
+    const preset = normalizarBusca(parametros.preset || '').replace(/ /g, '_');
+    const informadas = Array.isArray(parametros.permissoes)
+        ? parametros.permissoes
+        : parametros.permissoes
+            ? String(parametros.permissoes).split(/[,;|]/).map(item => item.trim())
+            : [];
+    const nomes = informadas.map(item => normalizarBusca(item).replace(/ /g, '_')).filter(Boolean);
+    const desconhecidas = nomes.filter(nome => !permissoesConhecidas[nome]);
+    if (desconhecidas.length > 0) {
+        throw new Error(`Permissões não reconhecidas: ${desconhecidas.join(', ')}. Use nomes como Gerenciar Mensagens, Timeout, Gerenciar Cargos, Banir Membros ou Administrador.`);
+    }
+    const bits = preset && presetsDeCargo[preset]
+        ? [...presetsDeCargo[preset]]
+        : nomes.map(nome => permissoesConhecidas[nome]);
+    return { preset, bits: [...new Set(bits)] };
+}
+
+function nomesDasPermissoes(bits) {
+    if (bits.includes(PermissionFlagsBits.Administrator)) return 'Administrador (todas as permissões)';
+    const nomes = [];
+    const descricoes = [
+        [PermissionFlagsBits.ManageMessages, 'Gerenciar mensagens'],
+        [PermissionFlagsBits.ModerateMembers, 'Timeout/moderar membros'],
+        [PermissionFlagsBits.ManageRoles, 'Gerenciar cargos'],
+        [PermissionFlagsBits.ManageChannels, 'Gerenciar canais'],
+        [PermissionFlagsBits.BanMembers, 'Banir membros'],
+        [PermissionFlagsBits.KickMembers, 'Expulsar membros'],
+        [PermissionFlagsBits.ManageNicknames, 'Gerenciar apelidos'],
+        [PermissionFlagsBits.UseApplicationCommands, 'Usar comandos'],
+        [PermissionFlagsBits.ViewChannel, 'Ver canais'],
+        [PermissionFlagsBits.SendMessages, 'Enviar mensagens']
+    ];
+    for (const [bit, nome] of descricoes) if (bits.includes(bit)) nomes.push(nome);
+    return nomes.length ? nomes.join(', ') : 'Sem permissões especiais';
+}
+
+function idPendenteIA() {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function criarConfirmacaoIA(guild, ator, pedido, plano) {
+    const id = idPendenteIA();
+    acoesIAPendentes.set(id, {
+        guildId: guild.id,
+        atorId: ator.id,
+        pedido,
+        plano,
+        expiraEm: Date.now() + 5 * 60 * 1000
+    });
+    setTimeout(() => acoesIAPendentes.delete(id), 5 * 60 * 1000).unref?.();
+    return {
+        content: `⚠️ **Confirme esta ação:**\n${plano.resposta}\n\nPedido: \`${pedido.slice(0, 500)}\``,
+        components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`ia_confirmar_${id}`).setLabel('Confirmar').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`ia_cancelar_${id}`).setLabel('Cancelar').setStyle(ButtonStyle.Secondary)
+        )]
+    };
+}
+
+async function executarAcaoIA({ guild, ator, canal, plano }) {
+    const { acao, parametros: p = {} } = plano;
+    if (!acoesIAMutaveis.has(acao)) {
+        return plano.resposta || 'Posso conversar e ajudar, mas não identifiquei uma ação executável.';
+    }
+
+    if (acao === 'create_role') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageRoles)) return '⛔ Você precisa da permissão **Gerenciar Cargos**.';
+        const nome = String(p.nome || '').trim();
+        if (!nome) return 'Diga o nome do cargo que devo criar.';
+        if (guild.roles.cache.some(role => normalizarBusca(role.name) === normalizarBusca(nome))) return `Já existe um cargo chamado **${nome}**.`;
+        const permissoes = permissoesDoCargo(p);
+        if (permissoes.bits.includes(PermissionFlagsBits.Administrator) && !isOwner(ator.id)) {
+            return '⛔ Apenas o dono do servidor pode criar um cargo com permissão de Administrador.';
+        }
+        const cor = /^#?[0-9a-f]{6}$/i.test(String(p.cor || '')) ? (String(p.cor).startsWith('#') ? p.cor : `#${p.cor}`) : '#5865F2';
+        const cargo = await guild.roles.create({
+            name: nome.slice(0, 100),
+            color: cor,
+            permissions: permissoes.bits,
+            mentionable: p.mencionar === true,
+            hoist: p.exibir_separado === true,
+            reason: `Criado pela IA a pedido de ${ator.user.tag}`
+        });
+        await enviarLog(guild, '🎭 Cargo Criado pela IA', `Cargo **${cargo.name}** criado.`, '#5865F2', [
+            { name: 'Criado por', value: `\`${ator.user.tag}\`` }
+        ]);
+        const avisoOwner = permissoes.bits.includes(PermissionFlagsBits.Administrator)
+            ? '\n⚠️ Este cargo tem todas as permissões, mas não transfere a propriedade do servidor.'
+            : '';
+        return `✅ Cargo criado: ${cargo}\n🔐 Permissões: ${nomesDasPermissoes(permissoes.bits)}${avisoOwner}`;
+    }
+
+    if (acao === 'delete_role') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageRoles)) return '⛔ Você precisa da permissão **Gerenciar Cargos**.';
+        const cargo = resolverCargo(guild, p.cargo);
+        if (!cargo) return `Não encontrei o cargo "${p.cargo || ''}".`;
+        if (!botPodeGerenciarCargo(guild, cargo)) return '⛔ Não consigo apagar esse cargo: ele está acima de mim ou é gerenciado por uma integração.';
+        await cargo.delete(`Apagado pela IA a pedido de ${ator.user.tag}`);
+        return `✅ Cargo **${cargo.name}** apagado.`;
+    }
+
+    if (acao === 'assign_role' || acao === 'remove_role') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageRoles)) return '⛔ Você precisa da permissão **Gerenciar Cargos**.';
+        const [membro, cargo] = await Promise.all([resolverMembro(guild, p.membro), resolverCargo(guild, p.cargo)]);
+        if (!cargo) return `Não encontrei o cargo "${p.cargo || ''}".`;
+        if (!botPodeGerenciarCargo(guild, cargo)) return '⛔ Não consigo gerenciar esse cargo por causa da hierarquia do Discord.';
+        if (membro.roles.highest.position >= guild.members.me.roles.highest.position && membro.id !== ator.id) return '⛔ Não posso alterar cargos desse membro por causa da hierarquia.';
+        if (acao === 'assign_role') {
+            await membro.roles.add(cargo, `Cargo dado pela IA a pedido de ${ator.user.tag}`);
+            return `✅ Cargo ${cargo} dado para ${membro}.`;
+        }
+        await membro.roles.remove(cargo, `Cargo removido pela IA a pedido de ${ator.user.tag}`);
+        return `✅ Cargo ${cargo} removido de ${membro}.`;
+    }
+
+    if (acao === 'assign_role_all' || acao === 'remove_role_all') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageRoles)) return '⛔ Você precisa da permissão **Gerenciar Cargos**.';
+        const cargo = resolverCargo(guild, p.cargo);
+        if (!cargo) return `Não encontrei o cargo "${p.cargo || ''}".`;
+        if (!botPodeGerenciarCargo(guild, cargo)) return '⛔ Não consigo gerenciar esse cargo por causa da hierarquia do Discord.';
+
+        await guild.members.fetch();
+        const incluirBots = p.incluir_bots === true || String(p.incluir_bots).toLowerCase() === 'true';
+        const membros = [...guild.members.cache.values()].filter(membro =>
+            (incluirBots || !membro.user.bot) &&
+            membro.id !== guild.ownerId &&
+            membro.roles.highest.position < guild.members.me.roles.highest.position
+        );
+        let alterados = 0;
+        let ignorados = 0;
+        let falhas = 0;
+
+        for (const membro of membros) {
+            const possuiCargo = membro.roles.cache.has(cargo.id);
+            const precisaAlterar = acao === 'assign_role_all' ? !possuiCargo : possuiCargo;
+            if (!precisaAlterar) {
+                ignorados++;
+                continue;
+            }
+            try {
+                if (acao === 'assign_role_all') {
+                    await membro.roles.add(cargo, `Cargo dado em massa pela IA a pedido de ${ator.user.tag}`);
+                } else {
+                    await membro.roles.remove(cargo, `Cargo removido em massa pela IA a pedido de ${ator.user.tag}`);
+                }
+                alterados++;
+            } catch (error) {
+                falhas++;
+                terminalLog('warn', `Não foi possível alterar cargo de ${membro.user.tag}: ${error.message}`);
+            }
+        }
+
+        const verbo = acao === 'assign_role_all' ? 'receberam' : 'tiveram o cargo removido';
+        return `✅ ${alterados} membro(s) ${verbo} ${cargo}.\n⏭️ Ignorados: ${ignorados} · Falhas: ${falhas}`;
+    }
+
+    if (acao === 'set_autorole') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageRoles)) return '⛔ Você precisa da permissão **Gerenciar Cargos**.';
+        const cargo = resolverCargo(guild, p.cargo);
+        if (!cargo) return `Não encontrei o cargo "${p.cargo || ''}".`;
+        if (!botPodeGerenciarCargo(guild, cargo)) return '⛔ Não consigo dar esse cargo automaticamente por causa da hierarquia.';
+        config.autoroleId = cargo.id;
+        saveConfig();
+        return `✅ Cargo automático definido como ${cargo}.`;
+    }
+
+    if (acao === 'ban' || acao === 'kick' || acao === 'timeout' || acao === 'unmute') {
+        const permissao = acao === 'ban'
+            ? PermissionFlagsBits.BanMembers
+            : acao === 'kick'
+                ? PermissionFlagsBits.KickMembers
+                : PermissionFlagsBits.ModerateMembers;
+        if (!operadorPode(ator, permissao)) return `⛔ Você não tem a permissão necessária para ${acao === 'ban' ? 'banir' : acao === 'kick' ? 'expulsar' : 'moderar'} membros.`;
+        const membro = await resolverMembro(guild, p.membro);
+        if (membro.id === ator.id || membro.id === guild.ownerId) return '⛔ Não posso executar essa ação nesse membro.';
+        if (!membro.moderatable && acao !== 'ban') return '⛔ Não consigo moderar esse membro por causa da hierarquia.';
+        if (membro.roles.highest.position >= guild.members.me.roles.highest.position) return '⛔ O cargo desse membro está acima do meu cargo mais alto.';
+        if (acao === 'ban') {
+            await membro.ban({ reason: p.motivo || `Banido pela IA a pedido de ${ator.user.tag}` });
+            return `✅ ${membro.user.tag} foi banido.`;
+        }
+        if (acao === 'kick') {
+            await membro.kick(p.motivo || `Expulso pela IA a pedido de ${ator.user.tag}`);
+            return `✅ ${membro.user.tag} foi expulso.`;
+        }
+        if (acao === 'unmute') {
+            await membro.timeout(null, `Silêncio removido pela IA a pedido de ${ator.user.tag}`);
+            return `✅ Timeout removido de ${membro}.`;
+        }
+        const minutos = Math.min(Math.max(Number(p.minutos) || 10, 1), 28 * 24 * 60);
+        await membro.timeout(minutos * 60 * 1000, p.motivo || `Silenciado pela IA a pedido de ${ator.user.tag}`);
+        return `✅ ${membro} silenciado por ${minutos} minutos.`;
+    }
+
+    if (acao === 'clear_messages') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageMessages)) return '⛔ Você precisa da permissão **Gerenciar Mensagens**.';
+        if (!canal?.isTextBased?.() || !canal.bulkDelete) return 'Não encontrei um canal de texto onde possa apagar mensagens.';
+        const quantidade = Math.min(Math.max(Number(p.quantidade) || 1, 1), 100);
+        const apagadas = await canal.bulkDelete(quantidade, true);
+        return `✅ ${apagadas.size} mensagens apagadas neste canal.`;
+    }
+
+    if (acao === 'nickname') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageNicknames)) return '⛔ Você precisa da permissão **Gerenciar Apelidos**.';
+        const membro = await resolverMembro(guild, p.membro);
+        if (!membro.manageable) return '⛔ Não consigo alterar o apelido desse membro por causa da hierarquia.';
+        const apelido = p.apelido ? String(p.apelido).slice(0, 32) : null;
+        await membro.setNickname(apelido, `Alterado pela IA a pedido de ${ator.user.tag}`);
+        return `✅ Apelido de ${membro} ${apelido ? `alterado para **${apelido}**` : 'removido'}.`;
+    }
+
+    if (acao === 'warn' || acao === 'clear_warns') {
+        if (!operadorPode(ator, PermissionFlagsBits.ModerateMembers)) return '⛔ Você precisa da permissão **Moderar Membros**.';
+        const membro = await resolverMembro(guild, p.membro);
+        if (!config.warns[guild.id]) config.warns[guild.id] = {};
+        if (acao === 'clear_warns') {
+            const antes = config.warns[guild.id][membro.id]?.length || 0;
+            delete config.warns[guild.id][membro.id];
+            saveConfig();
+            return `✅ Removi ${antes} advertência(s) de ${membro}.`;
+        }
+        if (!config.warns[guild.id][membro.id]) config.warns[guild.id][membro.id] = [];
+        const motivo = String(p.motivo || 'Advertência registrada pela equipe.').slice(0, 500);
+        config.warns[guild.id][membro.id].push({ motivo, data: new Date().toLocaleString('pt-BR'), staff: ator.user.tag });
+        saveConfig();
+        return `⚠️ Advertência registrada para ${membro}. Motivo: ${motivo}`;
+    }
+
+    if (acao === 'set_warn_limit') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode alterar o limite de advertências.';
+        config.warnLimit = Math.min(Math.max(Number(p.numero) || 3, 1), 10);
+        saveConfig();
+        return `✅ Limite de advertências definido como **${config.warnLimit}**.`;
+    }
+
+    if (acao === 'toggle_filter') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode alterar o filtro.';
+        config.filtroPalavroes = p.ativar === true || String(p.ativar).toLowerCase() === 'true';
+        saveConfig();
+        return `✅ Filtro de palavrões ${config.filtroPalavroes ? '**ativado**' : '**desativado**'}.`;
+    }
+
+    if (acao === 'set_personality') {
+        if (!operadorPode(ator, PermissionFlagsBits.ManageGuild)) return '⛔ Você precisa da permissão **Gerenciar Servidor**.';
+        const instrucoes = String(p.instrucoes || '').trim().slice(0, 1000);
+        if (!instrucoes) return 'Diga como devo me comportar neste servidor.';
+        config.personalidades[guild.id] = instrucoes;
+        saveConfig();
+        return '✅ Personalidade do servidor atualizada.';
+    }
+
+    if (acao === 'setup_logs') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode criar o sistema de logs.';
+        const logs = await getOrCreateLogsChannel(guild, true);
+        return logs ? `✅ Canal de logs pronto: ${logs}` : '❌ Não consegui criar o canal de logs.';
+    }
+
+    if (acao === 'create_backup') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode criar backup do servidor.';
+        const dadosBackup = await backup.create(guild, { maxMessagesPerChannel: 20, jsonSave: true, jsonName: 'servidor_backup_completo' });
+        config.ultimoBackupId = dadosBackup.id;
+        saveConfig();
+        return `✅ Backup criado e salvo. ID: \`${dadosBackup.id}\``;
+    }
+
+    if (acao === 'restore_backup') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode restaurar backup.';
+        if (!config.ultimoBackupId) return 'Não existe backup salvo para restaurar.';
+        await backup.load(config.ultimoBackupId, guild, { clearGuildBeforeRestore: true });
+        return '✅ Último backup restaurado.';
+    }
+
+    if (acao === 'speak') {
+        const canalVoz = ator.voice?.channel;
+        if (!canalVoz) return '🔊 Entre em uma call primeiro para eu falar nela.';
+        const texto = String(p.texto || '').trim();
+        if (!texto) return 'Diga o texto que devo falar.';
+        const audio = await sintetizarVozRobotica(texto.slice(0, 500));
+        const player = await conectarNaCall(guild, canalVoz);
+        const posicao = colocarNaFilaDeVoz(guild.id, player, audio);
+        return `🔊 Vou falar na call **${canalVoz.name}**${posicao > 1 ? `; fiquei na posição ${posicao} da fila` : ''}.`;
+    }
+
+    if (acao === 'setup_server') {
+        return 'Essa operação ainda precisa ser feita pelo comando original para manter o fluxo de segurança do servidor.';
+    }
+
+    return plano.resposta || 'Ação concluída.';
+}
+
+async function processarPedidoIA({ guild, ator, canal, pedido }) {
+    const plano = await consultarGroqParaAcao(guild, pedido, ator);
+    if (plano.acao === 'none') {
+        return { content: await consultarGroq(pedido, GROQ_MODEL, config.personalidades?.[guild.id] || '') };
+    }
+    if (!acoesIAMutaveis.has(plano.acao)) {
+        return { content: 'Não reconheci uma ação válida. Tente dizer exatamente o que deseja fazer.' };
+    }
+    if (acoesIAComConfirmacao.has(plano.acao) || plano.confirmacaoNecessaria) {
+        return criarConfirmacaoIA(guild, ator, pedido, plano);
+    }
+    return { content: await executarAcaoIA({ guild, ator, canal, plano }) };
+}
+
 async function gerarAnaliseNeuralComIA(guild, relatorio) {
     if (!GROQ_API_KEY) return null;
 
@@ -637,6 +1182,23 @@ async function responderMencaoComGroq(message) {
 
     try {
         await message.channel.sendTyping();
+        try {
+            const resultadoIA = await processarPedidoIA({
+                guild: message.guild,
+                ator: message.member,
+                canal: message.channel,
+                pedido: pergunta
+            });
+            await message.reply({
+                content: `<@${message.author.id}> ${resultadoIA.content || 'Pedido processado.'}`,
+                components: resultadoIA.components || [],
+                allowedMentions: { users: [message.author.id] }
+            });
+            return;
+        } catch (error) {
+            terminalLog('warn', `IA operacional indisponível; usando resposta comum: ${error.message}`);
+        }
+
         const modelos = [...new Set([GROQ_MODEL, GROQ_FALLBACK_MODEL])];
         const personalidade = config.personalidades?.[message.guild.id] || '';
         let resposta;
@@ -702,6 +1264,7 @@ client.on('ready', async () => {
         new SlashCommandBuilder().setName('filtro-palavroes').setDescription('[OWNER] Liga ou desliga o filtro de palavrões.').addBooleanOption(o => o.setName('ativar').setDescription('Ativar o filtro?').setRequired(true)),
         new SlashCommandBuilder().setName('personalidade').setDescription('Define como o bot deve agir neste servidor.').addStringOption(o => o.setName('instrucoes').setDescription('Ex.: seja engraçado, direto e use gírias.').setRequired(true).setMaxLength(1000)),
         new SlashCommandBuilder().setName('falar').setDescription('Entra na sua call e fala uma mensagem com voz robótica.').addStringOption(o => o.setName('mensagem').setDescription('O que o bot deve falar').setRequired(true).setMaxLength(500)),
+        new SlashCommandBuilder().setName('ia').setDescription('Pede para a IA executar uma tarefa no servidor.').addStringOption(o => o.setName('pedido').setDescription('Ex.: dê o cargo VIP para @alguém').setRequired(true).setMaxLength(1000)),
         new SlashCommandBuilder().setName('neural').setDescription('[OWNER] Exibe análise completa do servidor: panelinhas, influentes, conflitos.'),
         new SlashCommandBuilder().setName('neural-reset').setDescription('[OWNER] Apaga todos os dados coletados pelo sistema Neural.')
     ];
@@ -859,6 +1422,31 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         const { customId, member, guild } = interaction;
+        if (customId.startsWith('ia_confirmar_') || customId.startsWith('ia_cancelar_')) {
+            const id = customId.replace(/^ia_(?:confirmar|cancelar)_/, '');
+            const pendente = acoesIAPendentes.get(id);
+            if (!pendente) return interaction.reply({ content: 'Essa confirmação expirou. Faça o pedido novamente.', ephemeral: true });
+            if (pendente.guildId !== guild.id || pendente.atorId !== interaction.user.id) {
+                return interaction.reply({ content: 'Somente quem fez o pedido pode confirmar esta ação.', ephemeral: true });
+            }
+            acoesIAPendentes.delete(id);
+            if (customId.startsWith('ia_cancelar_')) {
+                return interaction.update({ content: '❎ Ação cancelada.', components: [] });
+            }
+            await interaction.deferUpdate();
+            try {
+                const resultado = await executarAcaoIA({
+                    guild,
+                    ator: member,
+                    canal: interaction.channel,
+                    plano: pendente.plano
+                });
+                return interaction.editReply({ content: resultado, components: [] });
+            } catch (error) {
+                terminalLog('error', `Falha na ação confirmada da IA: ${error.message}`);
+                return interaction.editReply({ content: `❌ Não consegui executar: ${error.message}`, components: [] });
+            }
+        }
         if (customId === 'solicitar_verificacao') {
             if (config.usuariosAgurdando?.includes(member.id)) return interaction.reply({ content: 'Seu pedido já foi enviado.', ephemeral: true });
             const canalLogs = guild.channels.cache.find(c => c.name === 'staff-gate');
@@ -906,6 +1494,23 @@ client.on('interactionCreate', async interaction => {
 
     if (!interaction.isChatInputCommand()) return;
     const { commandName, options, guild, channel } = interaction;
+
+    if (commandName === 'ia') {
+        const pedido = options.getString('pedido', true).trim();
+        await interaction.deferReply({ ephemeral: false });
+        try {
+            const resultado = await processarPedidoIA({
+                guild,
+                ator: interaction.member,
+                canal: channel,
+                pedido
+            });
+            return interaction.editReply(resultado);
+        } catch (error) {
+            terminalLog('error', `Falha no comando /ia: ${error.message}`);
+            return interaction.editReply({ content: `❌ Não consegui processar esse pedido: ${error.message}` });
+        }
+    }
 
     if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages) && !isOwner(interaction.user.id)) {
         return interaction.reply({ content: '⛔ Você não tem permissão para usar comandos.', ephemeral: true });
