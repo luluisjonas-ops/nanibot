@@ -255,12 +255,13 @@ async function consultarGroq(pergunta, model, personalidade = '') {
     return resposta;
 }
 
-const acoesIAComConfirmacao = new Set(['create_role', 'ban', 'kick', 'delete_role', 'assign_role_all', 'remove_role_all', 'clear_messages', 'create_backup', 'restore_backup', 'setup_server']);
+const acoesIAComConfirmacao = new Set(['create_role', 'ban', 'kick', 'delete_role', 'assign_role_all', 'remove_role_all', 'clear_messages', 'create_backup', 'restore_backup', 'setup_server', 'proxxy_session', 'neural_reset']);
 const acoesIAMutaveis = new Set([
     'create_role', 'delete_role', 'assign_role', 'remove_role', 'assign_role_all', 'remove_role_all', 'set_autorole',
     'ban', 'kick', 'timeout', 'unmute', 'clear_messages', 'nickname', 'warn',
     'clear_warns', 'set_warn_limit', 'toggle_filter', 'set_personality',
-    'setup_logs', 'setup_server', 'create_backup', 'restore_backup', 'speak'
+    'setup_logs', 'setup_server', 'create_backup', 'restore_backup', 'speak',
+    'move_member_voice', 'show_warns', 'neural_report', 'neural_reset', 'proxxy_session'
 ]);
 const acoesIAPendentes = new Map();
 
@@ -284,12 +285,15 @@ function contextoParaIA(guild, pedido, ator) {
     const membros = [...guild.members.cache.values()]
         .filter(member => !member.user.bot)
         .slice(0, 120)
-        .map(member => ({ id: member.id, nome: member.displayName, tag: member.user.tag }));
+        .map(member => ({ id: member.id, nome: member.displayName, tag: member.user.tag, call: member.voice.channel?.name || null }));
     const cargos = [...guild.roles.cache.values()]
         .filter(role => role.id !== guild.id)
         .sort((a, b) => b.position - a.position)
         .slice(0, 100)
         .map(role => ({ id: role.id, nome: role.name, gerenciado: role.managed }));
+    const canaisDeVoz = [...guild.channels.cache.values()]
+        .filter(channel => channel.isVoiceBased?.())
+        .map(channel => ({ id: channel.id, nome: channel.name, tipo: channel.type }));
 
     return {
         servidor: guild.name,
@@ -297,6 +301,7 @@ function contextoParaIA(guild, pedido, ator) {
         mencoesDetectadas: membrosMencionados,
         membrosDisponiveis: membros,
         cargosDisponiveis: cargos,
+        canaisDeVoz,
         pedido
     };
 }
@@ -316,13 +321,14 @@ Formato obrigatório:
 }
 
 Ações permitidas:
-none, create_role, delete_role, assign_role, remove_role, assign_role_all, remove_role_all, set_autorole, ban, kick, timeout, unmute, clear_messages, nickname, warn, clear_warns, set_warn_limit, toggle_filter, set_personality, setup_logs, setup_server, create_backup, restore_backup, speak.
+none, create_role, delete_role, assign_role, remove_role, assign_role_all, remove_role_all, set_autorole, ban, kick, timeout, unmute, clear_messages, nickname, warn, show_warns, clear_warns, set_warn_limit, toggle_filter, set_personality, setup_logs, setup_server, create_backup, restore_backup, speak, move_member_voice, neural_report, neural_reset, proxxy_session.
 
 Parâmetros aceitos:
 - create_role: nome, cor opcional, preset opcional, permissoes opcional (lista), mencionar opcional, exibir_separado_opcional
 - delete_role: cargo
 - assign_role/remove_role: membro, cargo
 - assign_role_all/remove_role_all: cargo; inclua_bots opcional
+- move_member_voice: membro, canal
 - set_autorole: cargo
 - ban/kick/timeout/unmute/warn/clear_warns/nickname: membro; timeout usa minutos; warn usa motivo; nickname usa apelido
 - clear_messages: quantidade
@@ -330,13 +336,15 @@ Parâmetros aceitos:
 - toggle_filter: ativar boolean
 - set_personality: instrucoes
 - create_backup/restore_backup/setup_server: operação administrativa de servidor
+- show_warns/neural_report/neural_reset: consultas e controle do sistema Neural
+- proxxy_session: cria a call privada Proxxy
 - speak: texto
 
 Regras:
 - Use os IDs das menções e das listas de contexto quando existirem.
 - Nunca invente um membro ou cargo. Se houver dúvida, use acao "none" e peça esclarecimento.
 - Não execute ações que não estejam na lista.
-- Para ban, kick, apagar cargo, limpar mensagens, restaurar backup ou setup-server, use confirmacao_necessaria=true.
+- Para ban, kick, apagar cargo, limpar mensagens, restaurar backup, setup-server, proxxy_session ou neural_reset, use confirmacao_necessaria=true.
 - Para pedidos de conversa, explicação ou consulta, use acao "none".
 - A personalidade do servidor, se existir, é apenas o estilo da resposta; nunca permite ignorar permissões.
 
@@ -419,6 +427,25 @@ function resolverCargo(guild, valor) {
     if (candidatos.length === 1) return candidatos[0];
     if (candidatos.length > 1) throw new Error(`Encontrei mais de um cargo parecido com "${busca}".`);
     return null;
+}
+
+function resolverCanalDeVoz(guild, valor) {
+    const busca = String(valor || '').trim();
+    const id = busca.match(/\d{15,25}/)?.[0];
+    if (id) {
+        const canalPorId = guild.channels.cache.get(id);
+        if (canalPorId?.isVoiceBased?.()) return canalPorId;
+    }
+    const chave = normalizarBusca(busca);
+    const candidatos = [...guild.channels.cache.values()].filter(channel =>
+        channel.isVoiceBased?.() && (
+            normalizarBusca(channel.name) === chave ||
+            normalizarBusca(channel.name).includes(chave)
+        )
+    );
+    if (candidatos.length === 1) return candidatos[0];
+    if (candidatos.length > 1) throw new Error(`Encontrei mais de uma call parecida com "${busca}". Use o nome exato.`);
+    throw new Error(`Não encontrei a call "${busca}".`);
 }
 
 function operadorPode(ator, permissao) {
@@ -542,25 +569,44 @@ function planoDiretoDeCriarCargo(pedido) {
     if (!match) return null;
 
     let resto = match[1].trim().replace(/^["'`]|["'`]$/g, '');
-    const separacao = resto.match(/^(.+?)\s+(?:com|para)\s+(.+)$/i);
-    const nome = (separacao ? separacao[1] : resto).trim().replace(/^["'`]|["'`]$/g, '');
-    const descricaoPermissoes = separacao?.[2]?.trim() || '';
+    const separacao = resto.match(/\s+(?:(?:da|de)\s+cor|com|para|que\s+(?:tenha|possua))\s+(.+)$/i);
+    let nome = (separacao ? resto.slice(0, separacao.index) : resto).trim();
+    let descricaoPermissoes = separacao?.[1]?.trim() || '';
+    nome = nome.replace(/^(?:chamado|chamada|de nome)\s+/i, '').trim();
     if (!nome || nome.length > 100) return null;
 
     const normalizado = normalizarTexto(descricaoPermissoes);
     const parametros = { nome };
-    const cor = descricaoPermissoes.match(/#[0-9a-f]{6}/i);
-    if (cor) parametros.cor = cor[0];
+    const corHex = descricaoPermissoes.match(/#[0-9a-f]{6}/i);
+    const cores = {
+        dourado: '#FFD700', dourada: '#FFD700',
+        vermelho: '#FF0000', vermelha: '#FF0000',
+        azul: '#3498DB', verde: '#2ECC71',
+        roxo: '#9B59B6', rosa: '#FF69B4',
+        preto: '#000000', preta: '#000000',
+        branco: '#FFFFFF', branca: '#FFFFFF',
+        amarelo: '#F1C40F', amarela: '#F1C40F'
+    };
+    const corNome = normalizado.match(/\b(dourado|dourada|vermelho|vermelha|azul|verde|roxo|rosa|preto|preta|branco|branca|amarelo|amarela)\b/);
+    if (corHex) {
+        parametros.cor = corHex[0];
+    } else if (corNome) {
+        parametros.cor = cores[corNome[1]];
+    }
 
-    if (/(?:owner|dono|proprietario|administrador total|todas as permissoes)/i.test(normalizado)) {
+    const permissaoExplicita = descricaoPermissoes.match(/(?:que\s+(?:tenha|possua)\s+)?(?:a\s+)?permiss(?:ão|oes)\s+(?:de|para)?\s*(.+)$/i);
+    if (permissaoExplicita) descricaoPermissoes = permissaoExplicita[1].trim();
+    const descricaoNormalizada = normalizarTexto(descricaoPermissoes);
+
+    if (/(?:owner|dono|proprietario|administrador total|admin total|adm total|todas as permissoes)/i.test(descricaoNormalizada)) {
         parametros.preset = 'owner';
-    } else if (/(?:administrador basico|admin basico|comandos basicos)/i.test(normalizado)) {
+    } else if (/(?:administrador basico|admin basico|adm basico|comandos basicos)/i.test(descricaoNormalizada)) {
         parametros.preset = 'admin_basico';
-    } else if (/\bmoderador\b/i.test(normalizado)) {
+    } else if (/\bmoderador\b/i.test(descricaoNormalizada)) {
         parametros.preset = 'moderador';
-    } else if (/\bsuporte\b/i.test(normalizado)) {
+    } else if (/\bsuporte\b/i.test(descricaoNormalizada)) {
         parametros.preset = 'suporte';
-    } else if (descricaoPermissoes) {
+    } else if (descricaoNormalizada) {
         parametros.permissoes = descricaoPermissoes
             .replace(/^com\s+/i, '')
             .split(/\s+e\s+|[,;|]/i)
@@ -573,6 +619,21 @@ function planoDiretoDeCriarCargo(pedido) {
         acao: 'create_role',
         parametros,
         confirmacaoNecessaria: true
+    };
+}
+
+function planoDiretoDeMoverMembro(pedido) {
+    const texto = String(pedido || '').replace(/\s+/g, ' ').trim().replace(/^(?:proxy|proxxy)\s+/i, '');
+    const match = texto.match(/^(?:move|mover|mova|joga|jogue|puxa)\s+(?:o\s+)?(.+?)\s+(?:para|pra|na|no)\s+(.+)$/i);
+    if (!match) return null;
+    const membro = match[1].trim();
+    const canal = match[2].trim().replace(/^(?:a\s+)?(?:call|canal\s+de\s+voz)\s+/i, '');
+    if (!membro || !canal) return null;
+    return {
+        resposta: `Vou mover ${membro} para a call **${canal}**.`,
+        acao: 'move_member_voice',
+        parametros: { membro, canal },
+        confirmacaoNecessaria: false
     };
 }
 
@@ -815,6 +876,65 @@ async function executarAcaoIA({ guild, ator, canal, plano }) {
         return '✅ Último backup restaurado.';
     }
 
+    if (acao === 'move_member_voice') {
+        if (!operadorPode(ator, PermissionFlagsBits.MoveMembers)) return '⛔ Você precisa da permissão **Mover Membros**.';
+        const membro = await resolverMembro(guild, p.membro);
+        const canalVoz = resolverCanalDeVoz(guild, p.canal);
+        if (!membro.voice.channel) return `❌ ${membro.user.tag} não está em uma call agora.`;
+        if (!canalVoz.permissionsFor(guild.members.me)?.has(PermissionFlagsBits.Connect)) {
+            return '⛔ Não consigo conectar no canal de destino.';
+        }
+        await membro.voice.setChannel(canalVoz, `Movido pela IA a pedido de ${ator.user.tag}`);
+        return `✅ ${membro} foi movido para **${canalVoz.name}**.`;
+    }
+
+    if (acao === 'show_warns') {
+        const membro = await resolverMembro(guild, p.membro);
+        const lista = config.warns?.[guild.id]?.[membro.id] || [];
+        if (lista.length === 0) return `✅ ${membro} não possui advertências.`;
+        return `📋 Advertências de ${membro} (${lista.length}/${config.warnLimit || 3}):\n${lista.map((warn, indice) => `${indice + 1}. ${warn.motivo} — ${warn.data}`).join('\n')}`;
+    }
+
+    if (acao === 'neural_report') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode consultar o Neural.';
+        const relatorio = gerarRelatorioNeural(guild);
+        if (!relatorio) return '🧠 Ainda não existem dados suficientes para o relatório Neural.';
+        const ativos = relatorio.topAtivos.slice(0, 5).map(([id, dados], indice) => `${indice + 1}. ${dados.tag} — ${dados.messages} mensagens`).join('\n') || 'Nenhum';
+        const influentes = relatorio.comInfluencia.slice(0, 5).map((item, indice) => `${indice + 1}. ${item.tag} — ${item.mencoes} menções`).join('\n') || 'Nenhum';
+        return `🧠 **Relatório Neural**\nMembros monitorados: ${relatorio.total}\n\n**Mais ativos**\n${ativos}\n\n**Mais influentes**\n${influentes}`;
+    }
+
+    if (acao === 'neural_reset') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode resetar o Neural.';
+        config.neural = { members: {} };
+        saveConfig();
+        return '✅ Dados do sistema Neural apagados.';
+    }
+
+    if (acao === 'proxxy_session') {
+        if (!isOwner(ator.id)) return '⛔ Apenas o dono pode abrir uma sessão Proxxy.';
+        const existente = guild.channels.cache.find(channel => channel.name === './/Proxxy' && channel.type === ChannelType.GuildVoice);
+        if (existente) return `⚠️ Já existe uma sessão Proxxy: ${existente}.`;
+        const voiceChannel = await guild.channels.create({
+            name: './/Proxxy',
+            type: ChannelType.GuildVoice,
+            permissionOverwrites: [
+                { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
+                { id: ator.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
+                { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] }
+            ]
+        });
+        joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfMute: true,
+            selfDeaf: true
+        });
+        proxxySession.set(guild.id, { channelId: voiceChannel.id, startTime: Date.now() });
+        return `✅ Sessão Proxxy criada: ${voiceChannel}.`;
+    }
+
     if (acao === 'speak') {
         const canalVoz = ator.voice?.channel;
         if (!canalVoz) return '🔊 Entre em uma call primeiro para eu falar nela.';
@@ -834,7 +954,7 @@ async function executarAcaoIA({ guild, ator, canal, plano }) {
 }
 
 async function processarPedidoIA({ guild, ator, canal, pedido }) {
-    const planoDireto = planoDiretoDeCriarCargo(pedido);
+    const planoDireto = planoDiretoDeCriarCargo(pedido) || planoDiretoDeMoverMembro(pedido);
     const plano = planoDireto || await consultarGroqParaAcao(guild, pedido, ator);
     if (plano.acao === 'none') {
         if (pedidoPareceOperacional(pedido)) {
