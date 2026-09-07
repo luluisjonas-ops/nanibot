@@ -19,6 +19,7 @@ const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerSta
 const backup = require('discord-backup');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const { spawn } = require('child_process');
 const { Readable } = require('stream');
@@ -318,7 +319,7 @@ Não invente informações que não estejam nos dados. Não acuse ninguém de cr
     return null;
 }
 
-function sintetizarVozRobotica(texto) {
+function sintetizarVozLocal(texto) {
     return new Promise((resolve, reject) => {
         const tts = spawn('espeak-ng', [
             '-v', 'pt-br',
@@ -358,7 +359,11 @@ function sintetizarVozRobotica(texto) {
         ffmpeg.stdout.on('data', dados => partes.push(dados));
         tts.stdout.pipe(ffmpeg.stdin);
         ffmpeg.stdin.on('error', () => {});
-        tts.on('error', erro => terminarComErro(new Error(`Sintetizador de voz indisponível: ${erro.message}`)));
+        tts.on('error', erro => {
+            const falha = new Error(`Sintetizador de voz indisponível: ${erro.message}`);
+            falha.code = erro.code;
+            terminarComErro(falha);
+        });
         ffmpeg.on('error', erro => terminarComErro(new Error(`Conversor de áudio indisponível: ${erro.message}`)));
         tts.on('close', codigo => {
             if (codigo !== 0) {
@@ -375,6 +380,108 @@ function sintetizarVozRobotica(texto) {
             resolve(Buffer.concat(partes));
         });
     });
+}
+
+function converterMp3sParaDiscord(arquivos) {
+    return new Promise((resolve, reject) => {
+        const lista = path.join(path.dirname(arquivos[0]), 'lista.txt');
+        const linhas = arquivos.map(arquivo => `file '${arquivo.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
+        fs.writeFileSync(lista, `${linhas}\n`);
+
+        const ffmpeg = spawn('ffmpeg', [
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', lista,
+            '-vn',
+            '-ac', '2',
+            '-ar', '48000',
+            '-c:a', 'libopus',
+            '-b:a', '64k',
+            '-application', 'voip',
+            '-frame_duration', '20',
+            '-f', 'ogg',
+            'pipe:1'
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const partes = [];
+        let erro = '';
+
+        ffmpeg.stdout.on('data', dados => partes.push(dados));
+        ffmpeg.stderr.on('data', dados => { erro += dados.toString(); });
+        ffmpeg.on('error', erroProcesso => reject(new Error(`Conversor de áudio indisponível: ${erroProcesso.message}`)));
+        ffmpeg.on('close', codigo => {
+            if (codigo !== 0 || partes.length === 0) {
+                reject(new Error(erro.trim() || 'Não foi possível converter a fala para o formato do Discord.'));
+                return;
+            }
+            resolve(Buffer.concat(partes));
+        });
+    });
+}
+
+function dividirTextoParaTts(texto, limite = 180) {
+    const palavras = texto.split(/\s+/).filter(Boolean);
+    const partes = [];
+    let atual = '';
+
+    for (const palavra of palavras) {
+        if (palavra.length > limite) {
+            if (atual) partes.push(atual);
+            for (let inicio = 0; inicio < palavra.length; inicio += limite) {
+                partes.push(palavra.slice(inicio, inicio + limite));
+            }
+            atual = '';
+            continue;
+        }
+        const candidato = atual ? `${atual} ${palavra}` : palavra;
+        if (candidato.length > limite) {
+            partes.push(atual);
+            atual = palavra;
+        } else {
+            atual = candidato;
+        }
+    }
+    if (atual) partes.push(atual);
+    return partes;
+}
+
+async function sintetizarVozGoogle(texto) {
+    const pastaTemporaria = fs.mkdtempSync(path.join(os.tmpdir(), 'nanibot-tts-'));
+    const arquivos = [];
+
+    try {
+        for (const [indice, parte] of dividirTextoParaTts(texto).entries()) {
+            const url = new URL('https://translate.google.com/translate_tts');
+            url.searchParams.set('ie', 'UTF-8');
+            url.searchParams.set('client', 'tw-ob');
+            url.searchParams.set('tl', 'pt-BR');
+            url.searchParams.set('q', parte);
+
+            const resposta = await fetchHttp(url.toString(), {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            if (!resposta.ok) throw new Error(`TTS online retornou HTTP ${resposta.status}.`);
+
+            const arquivo = path.join(pastaTemporaria, `${indice}.mp3`);
+            fs.writeFileSync(arquivo, Buffer.from(await resposta.arrayBuffer()));
+            arquivos.push(arquivo);
+        }
+
+        return await converterMp3sParaDiscord(arquivos);
+    } finally {
+        fs.rmSync(pastaTemporaria, { recursive: true, force: true });
+    }
+}
+
+async function sintetizarVozRobotica(texto) {
+    try {
+        return await sintetizarVozLocal(texto);
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        terminalLog('warn', 'espeak-ng não existe neste ambiente; usando TTS online em português.');
+        return sintetizarVozGoogle(texto);
+    }
 }
 
 function iniciarPlayerDeVoz(guildId) {
