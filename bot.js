@@ -475,10 +475,17 @@ async function sintetizarVozGoogle(texto) {
 }
 
 async function sintetizarVozRobotica(texto) {
+    const ambienteRender = process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID);
+    if (ambienteRender) {
+        terminalLog('info', 'Render detectado; usando TTS online em português.');
+        return sintetizarVozGoogle(texto);
+    }
+
     try {
         return await sintetizarVozLocal(texto);
     } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
+        const espeakIndisponivel = error.code === 'ENOENT' || /espeak-ng.*ENOENT/i.test(error.message || '');
+        if (!espeakIndisponivel) throw error;
         terminalLog('warn', 'espeak-ng não existe neste ambiente; usando TTS online em português.');
         return sintetizarVozGoogle(texto);
     }
