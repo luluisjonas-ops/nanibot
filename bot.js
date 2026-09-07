@@ -24,6 +24,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const fetchHttp = globalThis.fetch ? globalThis.fetch.bind(globalThis) : require('node-fetch');
+const fetchTts = require('node-fetch');
 
 const client = new Client({
     intents: [
@@ -458,13 +459,27 @@ async function sintetizarVozGoogle(texto) {
             url.searchParams.set('tl', 'pt-BR');
             url.searchParams.set('q', parte);
 
-            const resposta = await fetchHttp(url.toString(), {
-                headers: { 'User-Agent': 'Mozilla/5.0' }
-            });
-            if (!resposta.ok) throw new Error(`TTS online retornou HTTP ${resposta.status}.`);
+            let audio;
+            let ultimoErro;
+            for (let tentativa = 1; tentativa <= 3; tentativa++) {
+                try {
+                    const resposta = await fetchTts(url.toString(), {
+                        headers: { 'User-Agent': 'Mozilla/5.0' },
+                        timeout: 20_000
+                    });
+                    if (!resposta.ok) throw new Error(`TTS online retornou HTTP ${resposta.status}.`);
+                    audio = await resposta.buffer();
+                    if (!audio?.length) throw new Error('TTS online retornou áudio vazio.');
+                    break;
+                } catch (error) {
+                    ultimoErro = error;
+                    if (tentativa < 3) await new Promise(resolve => setTimeout(resolve, 600 * tentativa));
+                }
+            }
+            if (!audio) throw new Error(`TTS online falhou após 3 tentativas: ${ultimoErro?.message || 'erro desconhecido'}`);
 
             const arquivo = path.join(pastaTemporaria, `${indice}.mp3`);
-            fs.writeFileSync(arquivo, Buffer.from(await resposta.arrayBuffer()));
+            fs.writeFileSync(arquivo, audio);
             arquivos.push(arquivo);
         }
 
